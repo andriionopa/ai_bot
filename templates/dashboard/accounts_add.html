@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="uk">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Додавання акаунтів</title>
+    <link rel="stylesheet" href="/static/css/dashboard.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar card">
+        <div>
+          <p class="eyebrow">Accounts</p>
+          <h2 class="topbar-title">Додавання акаунтів</h2>
+        </div>
+        <div class="topbar-actions">
+          <a class="button button-ghost" href="{{ dashboard_home_url }}">Головна</a>
+          <a class="button button-ghost" href="{{ dashboard_accounts_url }}">Статуси</a>
+          <a class="button button-ghost" href="{{ dashboard_warmup_url }}">Прогрів</a>
+          <span class="user-chip">{{ request.user.email }}</span>
+          <a class="button button-ghost" href="/auth/logout/">Logout</a>
+        </div>
+      </header>
+
+      <div id="flash-box" class="flash-box" hidden></div>
+
+      <section class="section-banner card">
+        <div>
+          <p class="eyebrow">Attach</p>
+          <h2>Підв’язка до ферми</h2>
+        </div>
+        <p class="hint">Тут живе весь функціонал додавання акаунтів і проксі.</p>
+      </section>
+
+      <section class="panel-grid panel-grid-wide">
+        <article class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Attach</p>
+              <h2>Через `.session`</h2>
+            </div>
+            <span class="badge">Швидке підключення</span>
+          </div>
+          <form id="session-attach-form" class="stack-form" enctype="multipart/form-data">
+            <input type="hidden" name="attach_mode" value="session" />
+            <label class="field">
+              <span>Назва акаунта</span>
+              <input class="input" type="text" name="label" placeholder="Main Seller UA" required />
+            </label>
+            <label class="field">
+              <span>Session файл</span>
+              <input class="input input-file" type="file" name="session_file" accept=".session" required />
+            </label>
+            <label class="field">
+              <span>Проксі</span>
+              <select class="input" name="proxy" data-proxy-select>
+                <option value="">Без проксі</option>
+              </select>
+            </label>
+            <button class="button button-primary" type="submit">Підв’язати до ферми</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Attach</p>
+              <h2>Через звичайну auth</h2>
+            </div>
+            <span class="badge badge-muted">Code + 2FA</span>
+          </div>
+          <form id="credentials-attach-form" class="stack-form">
+            <input type="hidden" name="attach_mode" value="credentials" />
+            <label class="field">
+              <span>Назва акаунта</span>
+              <input class="input" type="text" name="label" placeholder="Warmup Batch 01" required />
+            </label>
+            <label class="field">
+              <span>Телефон</span>
+              <input class="input" type="text" name="phone_number" placeholder="+380..." required />
+            </label>
+            <label class="field">
+              <span>Проксі</span>
+              <select class="input" name="proxy" data-proxy-select>
+                <option value="">Без проксі</option>
+              </select>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" name="requires_2fa" />
+              <span>Акаунт використовує 2FA пароль</span>
+            </label>
+            <button class="button button-primary" type="submit">Надіслати код входу</button>
+          </form>
+        </article>
+
+        <article class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Proxy</p>
+              <h2>Додати проксі</h2>
+            </div>
+            <span class="badge badge-muted">Для підв’язки</span>
+          </div>
+          <form id="proxy-form" class="stack-form">
+            <label class="field">
+              <span>Назва</span>
+              <input class="input" type="text" name="name" placeholder="Mobile UA #1" required />
+            </label>
+            <div class="compact-grid">
+              <label class="field">
+                <span>Протокол</span>
+                <select class="input" name="protocol">
+                  <option value="socks5">SOCKS5</option>
+                  <option value="http">HTTP</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Порт</span>
+                <input class="input" type="number" name="port" min="1" max="65535" value="1080" required />
+              </label>
+            </div>
+            <label class="field">
+              <span>Host</span>
+              <input class="input" type="text" name="host" placeholder="127.0.0.1" required />
+            </label>
+            <div class="compact-grid">
+              <label class="field">
+                <span>Логін</span>
+                <input class="input" type="text" name="username" />
+              </label>
+              <label class="field">
+                <span>Пароль</span>
+                <input class="input" type="text" name="password" />
+              </label>
+            </div>
+            <button class="button button-secondary" type="submit">Зберегти проксі</button>
+          </form>
+        </article>
+      </section>
+    </main>
+
+    <script>
+      window.farmPageConfig = {
+        overviewUrl: "{{ accounts_overview_url }}",
+        addUrl: "{{ account_add_url }}",
+        proxyAddUrl: "{{ proxy_add_url }}",
+        statusPageUrl: "{{ dashboard_accounts_url }}",
+      };
+    </script>
+    <script src="/static/js/farm_pages.js"></script>
+  </body>
+</html>

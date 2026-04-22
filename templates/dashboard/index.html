@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="uk">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Telegram AI Combine</title>
+    <link rel="stylesheet" href="/static/css/dashboard.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar card">
+        <div>
+          <p class="eyebrow">Workspace</p>
+          <h2 class="topbar-title">Комбайн</h2>
+        </div>
+        <div class="topbar-actions">
+          <span class="user-chip">{{ request.user.email }}</span>
+          <a class="button button-ghost" href="/auth/logout/">Logout</a>
+        </div>
+      </header>
+
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Control Room</p>
+          <h1>Telegram AI Combine</h1>
+          <p class="lede">
+            Розділи керування винесені на окремі сторінки: акаунти, статуси ферми, генератор профілів і прогрів.
+          </p>
+        </div>
+        <div class="card status-card">
+          <h2>Поточний стан</h2>
+          <div class="stats-grid">
+            <div class="stat">
+              <span class="stat-label">Усього акаунтів</span>
+              <strong id="stat-accounts">0</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Підключені</span>
+              <strong id="stat-connected">0</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Очікують auth</span>
+              <strong id="stat-pending">0</strong>
+            </div>
+            <div class="stat">
+              <span class="stat-label">Проксі</span>
+              <strong id="stat-proxies">0</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="nav-grid">
+        <a class="card nav-card" href="{{ dashboard_accounts_add_url }}">
+          <p class="eyebrow">Accounts</p>
+          <h2>Додати акаунт</h2>
+          <p class="hint">Окрема сторінка для `.session`, звичайної auth і проксі.</p>
+        </a>
+        <a class="card nav-card" href="{{ dashboard_accounts_url }}">
+          <p class="eyebrow">Farm</p>
+          <h2>Статуси акаунтів</h2>
+          <p class="hint">Окрема сторінка зі станами, health score і діями по акаунтах.</p>
+        </a>
+        <a class="card nav-card" href="{{ dashboard_profiles_url }}">
+          <p class="eyebrow">Profiles</p>
+          <h2>Генератор профілів</h2>
+          <p class="hint">AI-біо, AI-фото або ручне фото з файлу з застосуванням через Pyrogram.</p>
+        </a>
+        <a class="card nav-card" href="{{ dashboard_warmup_url }}">
+          <p class="eyebrow">Warmup</p>
+          <h2>Прогрів</h2>
+          <p class="hint">Policy-driven вступи, читання, read-state і реакції з урахуванням health/quarantine.</p>
+        </a>
+      </section>
+    </main>
+
+    <script>
+      window.farmPageConfig = {
+        overviewUrl: "{{ accounts_overview_url }}",
+      };
+    </script>
+    <script src="/static/js/farm_pages.js"></script>
+  </body>
+</html>
