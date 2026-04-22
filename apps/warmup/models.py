@@ -42,6 +42,12 @@ class WarmupPolicy(models.Model):
     allow_folder_one_click = models.BooleanField(default=False)
     allow_public_gradual_join = models.BooleanField(default=True)
     allow_private_join = models.BooleanField(default=True)
+    enable_reactions = models.BooleanField(default=True)
+    enable_read_channels = models.BooleanField(default=True)
+    enable_account_dialogs = models.BooleanField(default=False)
+    enable_story_view = models.BooleanField(default=False)
+    enable_join_groups = models.BooleanField(default=True)
+    enable_trust_boost = models.BooleanField(default=False)
     enable_view_dialogs = models.BooleanField(default=True)
     enable_channel_scroll = models.BooleanField(default=True)
     enable_mark_read = models.BooleanField(default=True)
@@ -148,6 +154,9 @@ class WarmupAction(models.Model):
         VIEW_DIALOGS = "view_dialogs", "View Dialogs"
         CHANNEL_SCROLL = "channel_scroll", "Channel Scroll"
         READ = "read", "Read"
+        ACCOUNT_DIALOG = "account_dialog", "Account Dialog"
+        STORY_VIEW = "story_view", "Story View"
+        TRUST_BOOST = "trust_boost", "Trust Boost"
         MARK_READ = "mark_read", "Mark Read"
         MESSAGE_SEARCH = "message_search", "Message Search"
         REACTION = "reaction", "Reaction"

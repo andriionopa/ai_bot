@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import tempfile
 from pathlib import Path
 from typing import BinaryIO
 
@@ -17,6 +19,8 @@ IMAGE_SIGNATURES: tuple[tuple[str, bytes], ...] = (
 )
 ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
 SQLITE_HEADER = b"SQLite format 3\x00"
+PYROGRAM_SESSION_COLUMNS = {"dc_id", "api_id", "test_mode", "auth_key", "date", "user_id", "is_bot"}
+TELETHON_SESSION_COLUMNS = {"dc_id", "server_address", "port", "auth_key"}
 
 
 def _file_size(file_obj: object) -> int:
@@ -93,6 +97,31 @@ def validate_pyrogram_session_file(file_obj) -> None:
         raise ValidationError("Only Pyrogram .session files are allowed.")
     if not _peek(file_obj, len(SQLITE_HEADER)).startswith(SQLITE_HEADER):
         raise ValidationError("Uploaded session file is not a valid Pyrogram SQLite session.")
+
+    position = file_obj.tell() if hasattr(file_obj, "tell") else None
+    try:
+        if hasattr(file_obj, "seek"):
+            file_obj.seek(0)
+        content = file_obj.read()
+        with tempfile.NamedTemporaryFile(suffix=".session") as temp_file:
+            temp_file.write(content)
+            temp_file.flush()
+            try:
+                with sqlite3.connect(temp_file.name) as conn:
+                    session_columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+                    version_columns = {row[1] for row in conn.execute("PRAGMA table_info(version)").fetchall()}
+            except sqlite3.DatabaseError as exc:
+                raise ValidationError("Uploaded session file is not a readable Telegram SQLite session.") from exc
+    finally:
+        if position is not None and hasattr(file_obj, "seek"):
+            file_obj.seek(position)
+
+    is_pyrogram = "number" in version_columns and PYROGRAM_SESSION_COLUMNS.issubset(session_columns)
+    is_telethon = "version" in version_columns and TELETHON_SESSION_COLUMNS.issubset(session_columns)
+    if not is_pyrogram and not is_telethon:
+        raise ValidationError(
+            "This .session file is not compatible. Upload a Pyrogram 2.x or Telethon SQLite .session file."
+        )
 
 
 def validate_json_object_size(value: object, *, max_bytes: int, field_name: str) -> None:

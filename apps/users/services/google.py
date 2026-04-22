@@ -12,13 +12,14 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 
 
-def build_google_auth_url(state: str) -> str:
+def build_google_auth_url(state: str, redirect_uri: str | None = None) -> str:
     if not settings.GOOGLE_OAUTH_CLIENT_ID or not settings.GOOGLE_OAUTH_REDIRECT_URI:
         raise ValidationError("Google OAuth is not configured")
 
+    redirect_uri = redirect_uri or settings.GOOGLE_OAUTH_REDIRECT_URI
     params = {
         "client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
-        "redirect_uri": settings.GOOGLE_OAUTH_REDIRECT_URI,
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": "openid email profile",
         "state": state,
@@ -28,17 +29,18 @@ def build_google_auth_url(state: str) -> str:
     return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
 
-def fetch_google_userinfo(code: str) -> dict[str, str]:
+def fetch_google_userinfo(code: str, redirect_uri: str | None = None) -> dict[str, str]:
     if not settings.GOOGLE_OAUTH_CLIENT_SECRET:
         raise ValidationError("Google OAuth secret is not configured")
 
+    redirect_uri = redirect_uri or settings.GOOGLE_OAUTH_REDIRECT_URI
     token_response = requests.post(
         GOOGLE_TOKEN_URL,
         data={
             "code": code,
             "client_id": settings.GOOGLE_OAUTH_CLIENT_ID,
             "client_secret": settings.GOOGLE_OAUTH_CLIENT_SECRET,
-            "redirect_uri": settings.GOOGLE_OAUTH_REDIRECT_URI,
+            "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
         },
         timeout=15,
@@ -53,4 +55,3 @@ def fetch_google_userinfo(code: str) -> dict[str, str]:
     )
     userinfo_response.raise_for_status()
     return userinfo_response.json()
-

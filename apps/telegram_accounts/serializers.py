@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import serializers
 
 from apps.input_validation import validate_json_object_size, validate_pyrogram_session_file
-from apps.telegram_accounts.models import AccountHealthEvent, Proxy, TelegramAccount
+from apps.telegram_accounts.models import AccountHealthEvent, AccountRoleTemplate, Proxy, TelegramAccount
 
 
 PHONE_RE = re.compile(r"^\+?[1-9]\d{7,14}$")
@@ -28,12 +29,16 @@ def normalize_phone_number(value: str) -> str:
 
 class TelegramAccountSerializer(serializers.ModelSerializer):
     proxy = serializers.PrimaryKeyRelatedField(queryset=Proxy.objects.none(), required=False, allow_null=True)
+    avatar_url = serializers.SerializerMethodField()
+    role_template = serializers.PrimaryKeyRelatedField(queryset=AccountRoleTemplate.objects.none(), required=False, allow_null=True)
+    role_template_detail = serializers.SerializerMethodField()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             self.fields["proxy"].queryset = Proxy.objects.filter(owner=request.user, is_active=True)
+            self.fields["role_template"].queryset = AccountRoleTemplate.objects.filter(owner=request.user)
 
     class Meta:
         model = TelegramAccount
@@ -58,8 +63,15 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             "telegram_username",
             "first_name",
             "last_name",
+            "role",
+            "role_template",
+            "role_template_detail",
+            "birth_date",
+            "avatar_url",
             "health_score",
             "quarantine_until",
+            "last_success_at",
+            "last_error_at",
             "sleep_min_seconds",
             "sleep_max_seconds",
             "device_model",
@@ -84,6 +96,7 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             "telegram_username",
             "first_name",
             "last_name",
+            "avatar_url",
             "health_score",
             "quarantine_until",
             "created_at",
@@ -101,6 +114,20 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
     def validate_system_version(self, value):
         return " ".join((value or "").strip().split())
 
+    def validate_role(self, value):
+        return " ".join((value or "").strip().split())[:80]
+
+    def validate_birth_date(self, value):
+        if not value:
+            return value
+        today = timezone.localdate()
+        age = today.year - value.year - ((today.month, today.day) < (value.month, value.day))
+        if age < 13:
+            raise serializers.ValidationError("Account owner must be at least 13 years old.")
+        if age > 100:
+            raise serializers.ValidationError("Birth date looks unrealistic.")
+        return value
+
     def validate(self, attrs):
         sleep_min = attrs.get("sleep_min_seconds", getattr(self.instance, "sleep_min_seconds", None))
         sleep_max = attrs.get("sleep_max_seconds", getattr(self.instance, "sleep_max_seconds", None))
@@ -112,6 +139,55 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             if sleep_max > 24 * 60 * 60:
                 raise serializers.ValidationError({"sleep_max_seconds": "Sleep delay cannot exceed 24 hours."})
         return attrs
+
+    def get_avatar_url(self, obj):
+        draft = obj.profile_drafts.exclude(photo="").order_by("-applied_at", "-updated_at").first()
+        if not draft or not draft.photo:
+            return ""
+        try:
+            url = draft.photo.url
+        except ValueError:
+            return ""
+        request = self.context.get("request")
+        return request.build_absolute_uri(url) if request else url
+
+    def get_role_template_detail(self, obj):
+        if not obj.role_template_id:
+            return None
+        return {
+            "id": obj.role_template_id,
+            "name": obj.role_template.name,
+            "prompt": obj.role_template.prompt,
+        }
+
+    def update(self, instance, validated_data):
+        template = validated_data.get("role_template", serializers.empty)
+        instance = super().update(instance, validated_data)
+        if template is not serializers.empty:
+            instance.role = template.name if template else ""
+            instance.save(update_fields=["role"])
+        return instance
+
+
+class AccountRoleTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AccountRoleTemplate
+        fields = ("id", "name", "prompt", "created_at", "updated_at")
+        read_only_fields = ("created_at", "updated_at")
+
+    def validate_name(self, value):
+        value = " ".join((value or "").strip().split())
+        if not value:
+            raise serializers.ValidationError("Role template name is required.")
+        return value[:80]
+
+    def validate_prompt(self, value):
+        value = (value or "").strip()
+        if len(value) < 10:
+            raise serializers.ValidationError("Prompt must be at least 10 characters.")
+        if len(value) > 5000:
+            raise serializers.ValidationError("Prompt is too long.")
+        return value
 
 
 class ProxySerializer(serializers.ModelSerializer):
@@ -236,6 +312,63 @@ class TelegramAccountProxyAssignSerializer(serializers.Serializer):
             self.fields["proxy"].queryset = Proxy.objects.filter(owner=request.user, is_active=True)
 
 
+class TelegramAccountCreateChannelSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=128)
+    description = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    supergroup = serializers.BooleanField(required=False, default=False)
+
+    def validate_title(self, value):
+        value = " ".join((value or "").strip().split())
+        if len(value) < 3:
+            raise serializers.ValidationError("Channel title must be at least 3 characters.")
+        return value
+
+    def validate_description(self, value):
+        return " ".join((value or "").strip().split())
+
+
+class TelegramAccountSet2FASerializer(serializers.Serializer):
+    current_password = serializers.CharField(max_length=255, required=False, allow_blank=True, trim_whitespace=False)
+    new_password = serializers.CharField(min_length=8, max_length=255, trim_whitespace=False)
+    hint = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+
+    def validate_hint(self, value):
+        return " ".join((value or "").strip().split())
+
+
+class TelegramAccountDialogListSerializer(serializers.Serializer):
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=100, default=40)
+
+
+class TelegramAccountChatMessagesSerializer(serializers.Serializer):
+    chat_id = serializers.CharField(max_length=128)
+    limit = serializers.IntegerField(required=False, min_value=1, max_value=100, default=50)
+
+    def validate_chat_id(self, value):
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("chat_id is required.")
+        return value
+
+
+class TelegramAccountSendMessageSerializer(serializers.Serializer):
+    chat_id = serializers.CharField(max_length=128)
+    text = serializers.CharField(max_length=4096, trim_whitespace=True)
+
+    def validate_chat_id(self, value):
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("chat_id is required.")
+        return value
+
+    def validate_text(self, value):
+        value = (value or "").strip()
+        if not value:
+            raise serializers.ValidationError("Message text is required.")
+        return value
+
+
 class TelegramAccountBulkDetachSerializer(serializers.Serializer):
     account_ids = serializers.ListField(child=serializers.IntegerField(min_value=1), allow_empty=False, max_length=500)
 
@@ -275,6 +408,7 @@ class TelegramAccountHealthSerializer(serializers.ModelSerializer):
             "device_model",
             "system_version",
             "randomize_device_profile",
+            "last_auth_error",
             "recommended_pause_range",
             "recent_events",
         )

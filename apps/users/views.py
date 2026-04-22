@@ -5,8 +5,10 @@ import secrets
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
-from django.shortcuts import redirect, render
+from django.middleware.csrf import get_token
+from django.shortcuts import redirect
 from django.db import transaction
+from urllib.parse import urlencode, urlparse
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -16,6 +18,25 @@ from apps.users.models import User
 from apps.users.serializers import TelegramLoginSerializer, UserSerializer
 from apps.users.services.google import build_google_auth_url, fetch_google_userinfo
 from apps.users.services.tokens import build_token_pair
+
+
+def is_allowed_local_frontend_url(value: str) -> bool:
+    parsed = urlparse(value or "")
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    return parsed.hostname in {"127.0.0.1", "localhost", "192.168.0.192"}
+
+
+def default_frontend_url(request) -> str:
+    frontend = settings.FRONTEND_URL.rstrip("/")
+    parsed = urlparse(frontend)
+    if parsed.port == 3001:
+        return frontend
+
+    host = request.get_host().split(":")[0] or "127.0.0.1"
+    if host in {"127.0.0.1", "localhost", "192.168.0.192"}:
+        return f"http://{host}:3001"
+    return "http://127.0.0.1:3001"
 
 
 class TelegramLoginView(APIView):
@@ -51,7 +72,33 @@ class GoogleLoginURLView(APIView):
 
     def get(self, request):
         state = secrets.token_urlsafe(16)
-        return Response({"url": build_google_auth_url(state=state), "state": state})
+        redirect_uri = request.query_params.get("redirect_uri") or settings.GOOGLE_OAUTH_REDIRECT_URI
+        next_url = request.query_params.get("next") or default_frontend_url(request)
+        if redirect_uri and not (
+            is_allowed_local_frontend_url(redirect_uri) or redirect_uri == settings.GOOGLE_OAUTH_REDIRECT_URI
+        ):
+            redirect_uri = settings.GOOGLE_OAUTH_REDIRECT_URI
+        if next_url and not (
+            is_allowed_local_frontend_url(next_url) or next_url.startswith(settings.FRONTEND_URL.rstrip("/"))
+        ):
+            next_url = default_frontend_url(request)
+        request.session[f"google_oauth_redirect_uri:{state}"] = redirect_uri
+        request.session[f"google_oauth_next:{state}"] = next_url
+        request.session.modified = True
+        return Response({"url": build_google_auth_url(state=state, redirect_uri=redirect_uri), "state": state})
+
+
+class AuthConfigView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        get_token(request._request)
+        return Response(
+            {
+                "telegram_bot_username": settings.TELEGRAM_BOT_USERNAME or "",
+                "google_enabled": bool(settings.GOOGLE_OAUTH_CLIENT_ID and settings.GOOGLE_OAUTH_CLIENT_SECRET),
+            }
+        )
 
 
 class GoogleCallbackView(APIView):
@@ -63,7 +110,12 @@ class GoogleCallbackView(APIView):
         if not code:
             return Response({"detail": "Missing code"}, status=status.HTTP_400_BAD_REQUEST)
 
-        payload = fetch_google_userinfo(code)
+        state = request.query_params.get("state", "")
+        redirect_uri = request.session.pop(f"google_oauth_redirect_uri:{state}", settings.GOOGLE_OAUTH_REDIRECT_URI)
+        next_url = request.session.pop(f"google_oauth_next:{state}", default_frontend_url(request))
+        request.session.modified = True
+
+        payload = fetch_google_userinfo(code, redirect_uri=redirect_uri)
         email = User.objects.normalize_email(payload["email"])
         google_sub = payload["sub"]
         full_name = payload.get("name", "")
@@ -94,36 +146,36 @@ class GoogleCallbackView(APIView):
                 user.save(update_fields=update_fields)
 
         login(request._request, user, backend="django.contrib.auth.backends.ModelBackend")
+        tokens = build_token_pair(user)
         if "text/html" in request.headers.get("Accept", ""):
-            return redirect("dashboard-home")
-        return Response({"tokens": build_token_pair(user), "user": UserSerializer(user).data})
+            frontend_target = next_url or f"{default_frontend_url(request)}/auth/callback"
+            separator = "&" if "#" in frontend_target else "#"
+            fragment = urlencode(
+                {
+                    "access": tokens["access"],
+                    "refresh": tokens["refresh"],
+                }
+            )
+            return redirect(f"{frontend_target}{separator}{fragment}")
+        return Response({"tokens": tokens, "user": UserSerializer(user).data})
+
+
+class LogoutAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        logout(request._request)
+        return Response({"detail": "Logged out"}, status=status.HTTP_200_OK)
 
 
 class MeView(APIView):
     def get(self, request):
+        get_token(request._request)
         return Response(UserSerializer(request.user).data)
 
 
 def auth_page(request):
-    if request.user.is_authenticated:
-        return redirect("dashboard-home")
-
-    form = EmailLoginForm()
-    google_error = None
-    google_login_url = None
-    try:
-        google_login_url = build_google_auth_url(state=secrets.token_urlsafe(16))
-    except Exception as exc:  # pragma: no cover - config dependent
-        google_error = str(exc)
-
-    context = {
-        "form": form,
-        "google_login_url": google_login_url,
-        "google_error": google_error,
-        "telegram_bot_username": settings.TELEGRAM_BOT_USERNAME,
-        "backend_url": settings.BACKEND_URL.rstrip("/"),
-    }
-    return render(request, "auth/login.html", context)
+    return redirect(default_frontend_url(request) if request.user.is_authenticated else f"{default_frontend_url(request)}/auth")
 
 
 def session_login_view(request):
@@ -132,18 +184,7 @@ def session_login_view(request):
 
     form = EmailLoginForm(request.POST)
     if not form.is_valid():
-        return render(
-            request,
-            "auth/login.html",
-            {
-                "form": form,
-                "google_login_url": None,
-                "google_error": None,
-                "telegram_bot_username": settings.TELEGRAM_BOT_USERNAME,
-                "backend_url": settings.BACKEND_URL.rstrip("/"),
-            },
-            status=400,
-        )
+        return redirect(f"{default_frontend_url(request)}/auth")
 
     user = authenticate(
         request,
@@ -152,24 +193,13 @@ def session_login_view(request):
     )
     if user is None:
         form.add_error(None, "Invalid email or password.")
-        return render(
-            request,
-            "auth/login.html",
-            {
-                "form": form,
-                "google_login_url": None,
-                "google_error": None,
-                "telegram_bot_username": settings.TELEGRAM_BOT_USERNAME,
-                "backend_url": settings.BACKEND_URL.rstrip("/"),
-            },
-            status=400,
-        )
+        return redirect(f"{default_frontend_url(request)}/auth")
 
     login(request, user)
     messages.success(request, "Logged in.")
-    return redirect("dashboard-home")
+    return redirect(default_frontend_url(request))
 
 
 def logout_view(request):
     logout(request)
-    return redirect("auth-page")
+    return redirect(f"{default_frontend_url(request)}/auth")

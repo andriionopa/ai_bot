@@ -79,6 +79,15 @@ class TelegramAccount(models.Model):
     telegram_username = models.CharField(max_length=255, blank=True)
     first_name = models.CharField(max_length=255, blank=True)
     last_name = models.CharField(max_length=255, blank=True)
+    role = models.CharField(max_length=80, blank=True, default="")
+    role_template = models.ForeignKey(
+        "telegram_accounts.AccountRoleTemplate",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="accounts",
+    )
+    birth_date = models.DateField(null=True, blank=True)
     health_score = models.PositiveSmallIntegerField(default=100)
     quarantine_until = models.DateTimeField(null=True, blank=True)
     last_success_at = models.DateTimeField(null=True, blank=True)
@@ -104,6 +113,22 @@ class TelegramAccount(models.Model):
     @property
     def is_connected(self) -> bool:
         return self.is_attached and self.auth_state == self.AuthState.CONNECTED
+
+
+class AccountRoleTemplate(models.Model):
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="account_role_templates")
+    name = models.CharField(max_length=80)
+    prompt = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+        unique_together = (("owner", "name"),)
+        indexes = [models.Index(fields=("owner", "name"))]
+
+    def __str__(self) -> str:
+        return self.name
 
 
 class AccountHealthEvent(models.Model):

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import random
 import shutil
 import socket
+import sqlite3
 import time
 from collections.abc import Iterable
 from contextlib import contextmanager
@@ -14,7 +14,6 @@ from threading import RLock
 from uuid import uuid4
 
 from django.conf import settings
-from django.core.files.base import File
 from django.db import transaction
 from django.utils import timezone
 from django.utils.text import slugify
@@ -22,6 +21,8 @@ from pyrogram import Client
 from pyrogram.errors import BadRequest, RPCError, SessionPasswordNeeded
 from pyrogram.methods.auth.connect import Connect
 from pyrogram.methods.auth.disconnect import Disconnect
+from pyrogram.storage.sqlite_storage import SCHEMA as PYROGRAM_SQLITE_SCHEMA
+from pyrogram.storage.sqlite_storage import SQLiteStorage
 
 from apps.telegram_accounts.models import AccountHealthEvent, Proxy, TelegramAccount
 
@@ -80,13 +81,15 @@ EVENT_SCORE_DELTAS = {
     AccountHealthEvent.EventType.SUCCESS: 2,
 }
 
-DEVICE_PROFILES = (
-    ("iPhone 13 Pro", "iOS 17.4"),
-    ("Samsung Galaxy S23", "Android 14"),
-    ("Xiaomi 13", "Android 13"),
-    ("MacBook Pro", "macOS 14.4"),
-    ("Telegram Desktop", "Windows 11"),
-)
+DEFAULT_DEVICE_MODEL = "StogramGPT"
+DEFAULT_SYSTEM_VERSION = "Web Automation"
+RISKY_DEVICE_MODELS = {
+    "telegram desktop",
+    "iphone 13 pro",
+    "samsung galaxy s23",
+    "xiaomi 13",
+    "macbook pro",
+}
 
 
 def build_session_name(label: str, phone_number: str = "") -> str:
@@ -101,9 +104,13 @@ def resolve_device_profile(
     system_version: str = "",
     randomize_device_profile: bool = True,
 ) -> tuple[str, str]:
-    if device_model or system_version or not randomize_device_profile:
-        return device_model, system_version
-    return random.choice(DEVICE_PROFILES)
+    device_model = (device_model or "").strip()
+    system_version = (system_version or "").strip()
+    if not device_model or device_model.lower() in RISKY_DEVICE_MODELS:
+        device_model = DEFAULT_DEVICE_MODEL
+    if not system_version:
+        system_version = DEFAULT_SYSTEM_VERSION
+    return device_model, system_version
 
 
 def remove_account_session_files(session_name: str) -> None:
@@ -117,12 +124,61 @@ def remove_account_session_files(session_name: str) -> None:
             continue
 
 
+@transaction.atomic
+def delete_account_with_files(account: TelegramAccount) -> None:
+    close_auth_flow(account.id)
+    remove_account_session_files(account.session_name)
+    if account.session_file:
+        account.session_file.delete(save=False)
+    for draft in account.profile_drafts.exclude(photo="").only("id", "photo"):
+        draft.photo.delete(save=False)
+    account.delete()
+
+
 def install_uploaded_session_file(account: TelegramAccount) -> None:
     if not account.session_file:
         return
     source = Path(account.session_file.path)
     destination = telegram_runtime_workdir() / f"{account.session_name}.session"
+    if is_telethon_session_file(source):
+        convert_telethon_session_to_pyrogram(source, destination)
+        return
     shutil.copyfile(source, destination)
+
+
+def sqlite_table_columns(path: Path, table: str) -> set[str]:
+    with sqlite3.connect(path) as conn:
+        return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def is_telethon_session_file(path: Path) -> bool:
+    try:
+        session_columns = sqlite_table_columns(path, "sessions")
+        version_columns = sqlite_table_columns(path, "version")
+    except sqlite3.DatabaseError:
+        return False
+    return "version" in version_columns and {"dc_id", "server_address", "port", "auth_key"}.issubset(session_columns)
+
+
+def convert_telethon_session_to_pyrogram(source: Path, destination: Path) -> None:
+    with sqlite3.connect(source) as source_conn:
+        row = source_conn.execute(
+            "SELECT dc_id, auth_key FROM sessions WHERE auth_key IS NOT NULL ORDER BY dc_id LIMIT 1"
+        ).fetchone()
+    if not row:
+        raise RuntimeError("Telethon session is not authorized or does not contain an auth key.")
+
+    dc_id, auth_key = row
+    if destination.exists():
+        destination.unlink()
+    with sqlite3.connect(destination) as destination_conn:
+        destination_conn.executescript(PYROGRAM_SQLITE_SCHEMA)
+        destination_conn.execute("INSERT INTO version VALUES (?)", (SQLiteStorage.VERSION,))
+        destination_conn.execute(
+            "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (dc_id, settings.TELEGRAM_API_ID, 0, auth_key, int(time.time()), None, None),
+        )
+        destination_conn.commit()
 
 
 def build_pyrogram_proxy(proxy: Proxy | None) -> dict[str, object] | None:
@@ -146,14 +202,21 @@ def telegram_runtime_workdir() -> Path:
 def build_account_client(account: TelegramAccount) -> Client:
     if not settings.TELEGRAM_API_ID or not settings.TELEGRAM_API_HASH:
         raise RuntimeError("TELEGRAM_API_ID or TELEGRAM_API_HASH is not configured.")
+    device_model, system_version = resolve_device_profile(
+        device_model=account.device_model,
+        system_version=account.system_version,
+        randomize_device_profile=False,
+    )
     return Client(
         name=account.session_name,
         api_id=settings.TELEGRAM_API_ID,
         api_hash=settings.TELEGRAM_API_HASH,
         workdir=telegram_runtime_workdir(),
         proxy=build_pyrogram_proxy(account.proxy),
-        device_model=account.device_model or "Telegram AI Combine",
-        system_version=account.system_version or "Local Runtime",
+        device_model=device_model,
+        system_version=system_version,
+        app_version="0.1.0",
+        lang_code="en",
         no_updates=True,
     )
 
@@ -186,6 +249,256 @@ def run_client_operation(account: TelegramAccount, operation):
         finally:
             if app.is_connected:
                 loop.run_until_complete(Disconnect.disconnect(app))
+
+
+def refresh_account_profile_snapshot(account: TelegramAccount) -> TelegramAccount:
+    async def snapshot_operation(app):
+        return await app.get_me()
+
+    user = run_client_operation(account, snapshot_operation)
+    update_fields = [
+        "telegram_user_id",
+        "telegram_username",
+        "first_name",
+        "last_name",
+        "last_success_at",
+    ]
+    account.telegram_user_id = getattr(user, "id", None)
+    account.telegram_username = getattr(user, "username", "") or ""
+    account.first_name = getattr(user, "first_name", "") or ""
+    account.last_name = getattr(user, "last_name", "") or ""
+    account.last_success_at = timezone.now()
+
+    account.save(update_fields=update_fields)
+    return account
+
+
+def check_account_spam_block(account: TelegramAccount) -> dict[str, object]:
+    async def spam_check_operation(app):
+        await app.send_message("SpamBot", "/start")
+        await asyncio.sleep(2)
+        messages: list[str] = []
+        async for message in app.get_chat_history("SpamBot", limit=3):
+            text = (getattr(message, "text", "") or getattr(message, "caption", "") or "").strip()
+            if text:
+                messages.append(text)
+        joined = " ".join(messages).lower()
+        limited = any(
+            marker in joined
+            for marker in (
+                "limited",
+                "restriction",
+                "restricted",
+                "spam",
+                "can't send",
+                "cannot send",
+                "обмеж",
+                "спам",
+            )
+        )
+        return {"limited": limited, "messages": messages}
+
+    return run_client_operation(account, spam_check_operation)
+
+
+def _enum_value(value) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw or "").lower()
+
+
+def _isoformat(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _chat_display_title(chat) -> str:
+    title = getattr(chat, "title", "") or ""
+    if title:
+        return title
+    full_name = " ".join(
+        part
+        for part in (
+            getattr(chat, "first_name", "") or "",
+            getattr(chat, "last_name", "") or "",
+        )
+        if part
+    ).strip()
+    return full_name or getattr(chat, "username", "") or str(getattr(chat, "id", ""))
+
+
+def _message_text(message) -> str:
+    text = getattr(message, "text", "") or getattr(message, "caption", "") or ""
+    if text:
+        return text
+    if getattr(message, "media", None):
+        return "[media]"
+    if getattr(message, "service", None):
+        return "[service]"
+    return ""
+
+
+def _serialize_chat(chat) -> dict[str, object]:
+    return {
+        "id": str(getattr(chat, "id", "")),
+        "title": _chat_display_title(chat),
+        "username": getattr(chat, "username", "") or "",
+        "type": _enum_value(getattr(chat, "type", "")),
+    }
+
+
+def _serialize_message(message) -> dict[str, object]:
+    sender = getattr(message, "from_user", None) or getattr(message, "sender_chat", None)
+    return {
+        "id": getattr(message, "id", None),
+        "date": _isoformat(getattr(message, "date", None)),
+        "outgoing": bool(getattr(message, "outgoing", False)),
+        "text": _message_text(message),
+        "sender": _chat_display_title(sender) if sender else "",
+        "sender_username": getattr(sender, "username", "") or "",
+        "media": bool(getattr(message, "media", None)),
+    }
+
+
+def parse_telegram_chat_id(value: str):
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("chat_id is required.")
+    return int(text) if text.lstrip("-").isdigit() else text
+
+
+async def ensure_dialog_peer_cached(app, chat_id) -> bool:
+    if not isinstance(chat_id, int):
+        return True
+    async for dialog in app.get_dialogs(limit=200):
+        chat = getattr(dialog, "chat", None)
+        if getattr(chat, "id", None) == chat_id:
+            return True
+    return False
+
+
+def list_account_dialogs(account: TelegramAccount, *, limit: int = 40) -> list[dict[str, object]]:
+    async def dialogs_operation(app):
+        dialogs: list[dict[str, object]] = []
+        async for dialog in app.get_dialogs(limit=limit):
+            chat = getattr(dialog, "chat", None)
+            if chat is None:
+                continue
+            top_message = getattr(dialog, "top_message", None)
+            item = _serialize_chat(chat)
+            item.update(
+                {
+                    "unread_count": getattr(dialog, "unread_messages_count", 0) or 0,
+                    "last_message": _message_text(top_message) if top_message else "",
+                    "last_message_date": _isoformat(getattr(top_message, "date", None)) if top_message else None,
+                }
+            )
+            dialogs.append(item)
+        return dialogs
+
+    return run_client_operation(account, dialogs_operation)
+
+
+def list_account_chat_messages(
+    account: TelegramAccount,
+    *,
+    chat_id: str,
+    limit: int = 50,
+) -> dict[str, object]:
+    parsed_chat_id = parse_telegram_chat_id(chat_id)
+
+    async def messages_operation(app):
+        if not await ensure_dialog_peer_cached(app, parsed_chat_id):
+            raise RuntimeError("Telegram не знайшов цей діалог у списку доступних чатів поточного акаунта.")
+        chat = await app.get_chat(parsed_chat_id)
+        messages = []
+        async for message in app.get_chat_history(parsed_chat_id, limit=limit):
+            messages.append(_serialize_message(message))
+        messages.reverse()
+        return {
+            "chat": _serialize_chat(chat),
+            "messages": messages,
+        }
+
+    return run_client_operation(account, messages_operation)
+
+
+def send_account_chat_message(
+    account: TelegramAccount,
+    *,
+    chat_id: str,
+    text: str,
+) -> dict[str, object]:
+    parsed_chat_id = parse_telegram_chat_id(chat_id)
+
+    async def send_operation(app):
+        if not await ensure_dialog_peer_cached(app, parsed_chat_id):
+            raise RuntimeError("Telegram не знайшов цей діалог у списку доступних чатів поточного акаунта.")
+        message = await app.send_message(chat_id=parsed_chat_id, text=text)
+        return _serialize_message(message)
+
+    result = run_client_operation(account, send_operation)
+    account.last_success_at = timezone.now()
+    account.last_auth_error = ""
+    account.save(update_fields=["last_success_at", "last_auth_error"])
+    return result
+
+
+def check_account_proxy_connectivity(account: TelegramAccount) -> dict[str, object]:
+    if account.proxy is None:
+        return {"ok": False, "latency_ms": None, "error": "Акаунт не має призначеного проксі."}
+    result = check_proxy_connectivity(account.proxy)
+    return {
+        "ok": result.ok,
+        "latency_ms": result.latency_ms,
+        "error": result.error,
+        "proxy_id": account.proxy_id,
+        "proxy_name": account.proxy.name,
+    }
+
+
+def create_account_channel(
+    account: TelegramAccount,
+    *,
+    title: str,
+    description: str = "",
+    supergroup: bool = False,
+) -> dict[str, object]:
+    async def create_channel_operation(app):
+        chat = (
+            await app.create_supergroup(title, description)
+            if supergroup
+            else await app.create_channel(title, description)
+        )
+        return {
+            "id": getattr(chat, "id", None),
+            "title": getattr(chat, "title", title),
+            "username": getattr(chat, "username", "") or "",
+            "type": str(getattr(chat, "type", "")),
+        }
+
+    return run_client_operation(account, create_channel_operation)
+
+
+def set_account_cloud_password(
+    account: TelegramAccount,
+    *,
+    new_password: str,
+    current_password: str = "",
+    hint: str = "",
+    email: str = "",
+) -> dict[str, object]:
+    async def set_password_operation(app):
+        if current_password:
+            result = await app.change_cloud_password(current_password, new_password, hint)
+        else:
+            result = await app.enable_cloud_password(new_password, hint, email or None)
+        return {"enabled": bool(result)}
+
+    result = run_client_operation(account, set_password_operation)
+    account.requires_2fa = True
+    account.last_success_at = timezone.now()
+    account.last_auth_error = ""
+    account.save(update_fields=["requires_2fa", "last_success_at", "last_auth_error"])
+    return result
 
 
 def _flow_expired(flow: TelegramAuthFlow) -> bool:
@@ -270,6 +583,18 @@ def telegram_error_contains(exc: Exception, code: str) -> bool:
     return code in telegram_error_text(exc)
 
 
+def telegram_user_facing_error(exc: Exception) -> str:
+    error_text = telegram_error_text(exc)
+    upper_error = error_text.upper()
+    if "CHAT_ADMIN_REQUIRED" in upper_error:
+        return "У цей канал можна писати тільки з правами адміністратора. Видайте цьому Telegram-акаунту admin-права в каналі або оберіть чат/групу, де дозволені повідомлення."
+    if "PEER_ID_INVALID" in upper_error or "PEER ID INVALID" in upper_error:
+        return "Telegram не дав доступ до цього діалогу для поточної сесії. Оновіть список чатів, відкрийте діалог ще раз або переавторизуйте акаунт."
+    if "FLOOD_WAIT" in upper_error:
+        return "Telegram тимчасово обмежив дію для цього акаунта. Зачекайте FloodWait перед повторною спробою."
+    return error_text
+
+
 def calculate_account_health_score(account: TelegramAccount) -> int:
     events = account.health_events.all()
     score = 100 + sum(event.score_delta for event in events)
@@ -314,11 +639,10 @@ def attach_account_via_session(
         randomize_device_profile=randomize_device_profile,
         is_attached=True,
     )
-    install_uploaded_session_file(account)
     try:
+        install_uploaded_session_file(account)
+
         async def verify_session_operation(app):
-            if not await app.storage.user_id():
-                raise RuntimeError("Uploaded session is not authorized.")
             return await app.get_me()
 
         user = run_client_operation(account, verify_session_operation)
@@ -327,11 +651,6 @@ def attach_account_via_session(
         account.last_auth_error = ""
         account.last_success_at = timezone.now()
         account.health_score = calculate_account_health_score(account)
-        if user is not None:
-            account.telegram_user_id = getattr(user, "id", None)
-            account.telegram_username = getattr(user, "username", "") or ""
-            account.first_name = getattr(user, "first_name", "") or ""
-            account.last_name = getattr(user, "last_name", "") or ""
         account.save(
             update_fields=[
                 "auth_state",
@@ -339,13 +658,10 @@ def attach_account_via_session(
                 "last_auth_error",
                 "last_success_at",
                 "health_score",
-                "telegram_user_id",
-                "telegram_username",
-                "first_name",
-                "last_name",
             ]
         )
-    except (BadRequest, RPCError, OSError, RuntimeError) as exc:
+        refresh_account_profile_snapshot(account)
+    except (BadRequest, RPCError, OSError, RuntimeError, sqlite3.DatabaseError) as exc:
         remove_account_session_files(account.session_name)
         account.auth_state = TelegramAccount.AuthState.FAILED
         account.status = TelegramAccount.Status.DRAFT
@@ -418,24 +734,38 @@ def start_credentials_auth(
 @transaction.atomic
 def resend_credentials_code(account: TelegramAccount) -> TelegramAccount:
     close_auth_flow(account.id)
-    old_session_name = account.session_name
-    account.session_name = build_session_name(account.label, account.phone_number)
+    device_model, system_version = resolve_device_profile(
+        device_model=account.device_model,
+        system_version=account.system_version,
+        randomize_device_profile=False,
+    )
+    account.device_model = device_model
+    account.system_version = system_version
+    account.source = TelegramAccount.ConnectSource.CREDENTIALS
     account.auth_phone_code_hash = ""
     account.auth_code_sent_at = None
     account.auth_code_timeout_seconds = None
     account.auth_state = TelegramAccount.AuthState.PENDING_CODE
+    account.status = TelegramAccount.Status.DRAFT
+    account.is_attached = True
+    account.detached_at = None
     account.last_auth_error = ""
     account.save(
         update_fields=[
-            "session_name",
+            "device_model",
+            "system_version",
+            "source",
             "auth_phone_code_hash",
             "auth_code_sent_at",
             "auth_code_timeout_seconds",
             "auth_state",
+            "status",
+            "is_attached",
+            "detached_at",
             "last_auth_error",
         ]
     )
-    remove_account_session_files(old_session_name)
+    remove_account_session_files(account.session_name)
 
     try:
         async def send_code_operation(app):
@@ -488,23 +818,29 @@ def complete_credentials_auth(
                     )
                 except SessionPasswordNeeded:
                     if not password_2fa:
-                        account.requires_2fa = True
-                        account.auth_state = TelegramAccount.AuthState.PENDING_2FA
-                        account.last_auth_error = "2FA password required."
-                        account.save(update_fields=["requires_2fa", "auth_state", "last_auth_error"])
-                        return account
+                        return {
+                            "auth_state": TelegramAccount.AuthState.PENDING_2FA,
+                            "last_auth_error": "2FA password required.",
+                            "requires_2fa": True,
+                        }
                     user = await app.check_password(password_2fa)
             elif account.auth_state == TelegramAccount.AuthState.PENDING_2FA:
                 if not password_2fa:
-                    account.last_auth_error = "2FA password required."
-                    account.save(update_fields=["last_auth_error"])
-                    return account
+                    return {
+                        "auth_state": TelegramAccount.AuthState.PENDING_2FA,
+                        "last_auth_error": "2FA password required.",
+                        "requires_2fa": True,
+                    }
                 user = await app.check_password(password_2fa)
             return user
 
         user = run_auth_flow_operation(account, complete_auth_operation)
-        if isinstance(user, TelegramAccount):
-            return user
+        if isinstance(user, dict) and user.get("auth_state") == TelegramAccount.AuthState.PENDING_2FA:
+            account.requires_2fa = bool(user.get("requires_2fa", True))
+            account.auth_state = TelegramAccount.AuthState.PENDING_2FA
+            account.last_auth_error = str(user.get("last_auth_error") or "2FA password required.")
+            account.save(update_fields=["requires_2fa", "auth_state", "last_auth_error"])
+            return account
 
         account.auth_phone_code_hash = ""
         account.auth_code_sent_at = None
@@ -514,11 +850,6 @@ def complete_credentials_auth(
         account.last_auth_error = ""
         account.last_success_at = timezone.now()
         account.health_score = calculate_account_health_score(account)
-        if user is not None:
-            account.telegram_user_id = getattr(user, "id", None)
-            account.telegram_username = getattr(user, "username", "") or ""
-            account.first_name = getattr(user, "first_name", "") or ""
-            account.last_name = getattr(user, "last_name", "") or ""
         account.save(
             update_fields=[
                 "auth_phone_code_hash",
@@ -529,23 +860,25 @@ def complete_credentials_auth(
                 "last_auth_error",
                 "last_success_at",
                 "health_score",
-                "telegram_user_id",
-                "telegram_username",
-                "first_name",
-                "last_name",
             ]
         )
+        refresh_account_profile_snapshot(account)
         close_auth_flow(account.id)
     except (BadRequest, RPCError, OSError, RuntimeError) as exc:
         account.last_auth_error = telegram_error_text(exc)
         if telegram_error_contains(exc, "PHONE_CODE_INVALID") or telegram_error_contains(exc, "PHONE_CODE_EMPTY"):
             account.auth_state = TelegramAccount.AuthState.PENDING_CODE
-        elif telegram_error_contains(exc, "PASSWORD_HASH_INVALID"):
+        elif (
+            telegram_error_contains(exc, "PASSWORD_HASH_INVALID")
+            or telegram_error_contains(exc, "SESSION_PASSWORD_NEEDED")
+            or telegram_error_contains(exc, "PASSWORD_MISSING")
+        ):
+            account.requires_2fa = True
             account.auth_state = TelegramAccount.AuthState.PENDING_2FA
         else:
             account.auth_state = TelegramAccount.AuthState.FAILED
             close_auth_flow(account.id)
-        account.save(update_fields=["auth_state", "last_auth_error"])
+        account.save(update_fields=["auth_state", "requires_2fa", "last_auth_error"])
     return account
 
 
@@ -579,12 +912,14 @@ def cleanup_stale_accounts(*, owner) -> int:
             TelegramAccount.AuthState.DETACHED,
         ],
     )
-    accounts = list(queryset.only("id", "session_name", "session_file"))
+    accounts = list(queryset.prefetch_related("profile_drafts").only("id", "session_name", "session_file"))
     for account in accounts:
         close_auth_flow(account.id)
         remove_account_session_files(account.session_name)
         if account.session_file:
             account.session_file.delete(save=False)
+        for draft in account.profile_drafts.exclude(photo="").only("id", "photo"):
+            draft.photo.delete(save=False)
     deleted, _ = queryset.delete()
     return deleted
 

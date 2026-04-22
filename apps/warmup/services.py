@@ -41,6 +41,9 @@ PASSIVE_SCAN_ACTIONS = {
     WarmupAction.ActionType.MUTE_CHECK: "mute",
 }
 SCENARIO_FLAGS: tuple[tuple[str, str], ...] = (
+    ("enable_account_dialogs", WarmupAction.ActionType.ACCOUNT_DIALOG),
+    ("enable_story_view", WarmupAction.ActionType.STORY_VIEW),
+    ("enable_trust_boost", WarmupAction.ActionType.TRUST_BOOST),
     ("enable_view_dialogs", WarmupAction.ActionType.VIEW_DIALOGS),
     ("enable_channel_scroll", WarmupAction.ActionType.CHANNEL_SCROLL),
     ("enable_mark_read", WarmupAction.ActionType.MARK_READ),
@@ -81,6 +84,9 @@ ACTION_LABELS = {
     WarmupAction.ActionType.VIEW_DIALOGS: ("👀", "перегляд діалогів"),
     WarmupAction.ActionType.CHANNEL_SCROLL: ("📜", "прокрутка каналу"),
     WarmupAction.ActionType.READ: ("📖", "читання постів"),
+    WarmupAction.ActionType.ACCOUNT_DIALOG: ("💬", "діалоги між акаунтами"),
+    WarmupAction.ActionType.STORY_VIEW: ("🎞️", "перегляд сторіс"),
+    WarmupAction.ActionType.TRUST_BOOST: ("⭐", "підвищення довіри"),
     WarmupAction.ActionType.MARK_READ: ("✅", "позначення як прочитано"),
     WarmupAction.ActionType.MESSAGE_SEARCH: ("🔎", "пошук повідомлень"),
     WarmupAction.ActionType.REACTION: ("💬", "реакція на пост"),
@@ -204,6 +210,16 @@ def _result_details(action: WarmupAction, result: dict[str, object]) -> str:
             )
             return f"переглянув {result.get('dialogs', 0)} діалогів: {names}"
         return f"переглянув {result.get('dialogs', 0)} діалогів"
+    if action.action_type == WarmupAction.ActionType.ACCOUNT_DIALOG:
+        peers = result.get("peers") or []
+        if peers:
+            return f"перевірив можливі діалоги між акаунтами: {', '.join(peers[:8])}"
+        return "діалоги між акаунтами не запускались: потрібно 2+ акаунти у плані"
+    if action.action_type == WarmupAction.ActionType.STORY_VIEW:
+        return f"перевірив сторіс у «{result.get('title') or action.target.title}», доступних сторіс {result.get('stories', 0)}"
+    if action.action_type == WarmupAction.ActionType.TRUST_BOOST:
+        signals = ", ".join(result.get("signals", []) or [])
+        return f"зробив trust-сценарій: {signals or 'profile, read, dialogs'}"
     if action.action_type == WarmupAction.ActionType.MESSAGE_SEARCH:
         return f"пошук «{result.get('query')}»: знайдено {result.get('matches', 0)}"
     if action.action_type == WarmupAction.ActionType.FORWARD_MESSAGE:
@@ -273,15 +289,37 @@ def log_warmup_event(
     return log
 
 
+def _progressive_ramp_factor(policy: WarmupPolicy, now=None) -> float:
+    if not policy.progressive_ramp:
+        return 1.0
+    now = now or timezone.now()
+    policy_day = max(1, (timezone.localdate(now) - timezone.localdate(policy.created_at or now)).days + 1)
+    ramp_day = min(policy_day, 7)
+    return 0.3 + ((ramp_day - 1) * 0.7 / 6)
+
+
+def _scale_limit(value: int, factor: float, *, minimum: int = 1) -> int:
+    return max(minimum, int(round(value * factor)))
+
+
 def clamp_policy(policy: WarmupPolicy) -> dict[str, int]:
-    caps = BEHAVIOR_CAPS[policy.behavior_profile]
+    caps = BEHAVIOR_CAPS.get(policy.behavior_profile, BEHAVIOR_CAPS[WarmupPolicy.BehaviorProfile.BALANCED])
+    factor = _progressive_ramp_factor(policy)
+    daily_join_min = max(1, min(policy.daily_join_min, caps["daily_max"]))
+    daily_join_max = max(1, min(policy.daily_join_max, caps["daily_max"]))
+    reaction_probability = min(policy.reaction_probability, caps["reaction_probability"])
+    max_reactions_per_day = min(policy.max_reactions_per_day, caps["daily_max"])
+    actions_per_hour = min(policy.actions_per_hour, caps["actions_per_hour"]) if policy.auto_adapt_limits else policy.actions_per_hour
+    actions_per_day = min(policy.actions_per_day, caps["actions_per_day"]) if policy.auto_adapt_limits else policy.actions_per_day
+    scaled_daily_min = _scale_limit(daily_join_min, factor)
+    scaled_daily_max = _scale_limit(daily_join_max, factor)
     return {
-        "daily_join_min": max(1, min(policy.daily_join_min, caps["daily_max"])),
-        "daily_join_max": max(1, min(policy.daily_join_max, caps["daily_max"])),
-        "reaction_probability": min(policy.reaction_probability, caps["reaction_probability"]),
-        "max_reactions_per_day": min(policy.max_reactions_per_day, caps["daily_max"]),
-        "actions_per_hour": min(policy.actions_per_hour, caps["actions_per_hour"]) if policy.auto_adapt_limits else policy.actions_per_hour,
-        "actions_per_day": min(policy.actions_per_day, caps["actions_per_day"]) if policy.auto_adapt_limits else policy.actions_per_day,
+        "daily_join_min": min(scaled_daily_min, scaled_daily_max),
+        "daily_join_max": max(scaled_daily_min, scaled_daily_max),
+        "reaction_probability": _scale_limit(reaction_probability, factor, minimum=0),
+        "max_reactions_per_day": _scale_limit(max_reactions_per_day, factor),
+        "actions_per_hour": _scale_limit(actions_per_hour, factor),
+        "actions_per_day": _scale_limit(actions_per_day, factor),
     }
 
 
@@ -354,6 +392,14 @@ def _join_action_for_target(target: WarmupTarget) -> str:
     return WarmupAction.ActionType.JOIN_CHANNEL
 
 
+def _policy_allows_join(policy: WarmupPolicy, target: WarmupTarget) -> bool:
+    if target.target_type == WarmupTarget.TargetType.FOLDER:
+        return policy.allow_folder_one_click
+    if target.visibility == WarmupTarget.Visibility.PRIVATE and not policy.allow_private_join:
+        return False
+    return policy.enable_join_groups and policy.allow_public_gradual_join
+
+
 def _append_action(
     actions: list[WarmupAction],
     *,
@@ -395,14 +441,17 @@ def _scenario_metadata(policy: WarmupPolicy, action_type: str) -> dict[str, obje
 
 def _enabled_cycle_action_types(policy: WarmupPolicy) -> list[str]:
     action_types = [action_type for flag_name, action_type in SCENARIO_FLAGS if getattr(policy, flag_name)]
+    if policy.enable_read_channels:
+        action_types.append(WarmupAction.ActionType.READ)
     if not action_types:
-        return [WarmupAction.ActionType.READ, WarmupAction.ActionType.VIEW_DIALOGS]
+        return [WarmupAction.ActionType.VIEW_DIALOGS]
     return action_types
 
 
 def _pick_cycle_action_type(policy: WarmupPolicy, *, previous_action_type: str | None = None, allow_reaction: bool = True) -> str:
     action_types = _enabled_cycle_action_types(policy)
-    if allow_reaction and random.randint(1, 100) <= min(policy.reaction_probability, BEHAVIOR_CAPS[policy.behavior_profile]["reaction_probability"]):
+    limits = clamp_policy(policy)
+    if policy.enable_reactions and allow_reaction and random.randint(1, 100) <= limits["reaction_probability"]:
         action_types.append(WarmupAction.ActionType.REACTION)
     if previous_action_type and len(action_types) > 1:
         action_types = [action_type for action_type in action_types if action_type != previous_action_type] or action_types
@@ -548,42 +597,46 @@ def start_warmup_plan(plan: WarmupPlan) -> WarmupPlan:
 
         for target in targets:
             join_action_type = _join_action_for_target(target)
-            if target.target_type == WarmupTarget.TargetType.FOLDER and policy.allow_folder_one_click:
-                join_at = next_active_time(policy, now)
-            else:
-                join_at = next_active_time(
-                    policy,
-                    cursor + timedelta(seconds=random.randint(policy.delay_min_seconds, policy.delay_max_seconds)),
+            if _policy_allows_join(policy, target):
+                if target.target_type == WarmupTarget.TargetType.FOLDER and policy.allow_folder_one_click:
+                    join_at = next_active_time(policy, now)
+                else:
+                    join_at = next_active_time(
+                        policy,
+                        cursor + timedelta(seconds=random.randint(policy.delay_min_seconds, policy.delay_max_seconds)),
+                    )
+                _append_action(
+                    actions,
+                    plan=plan,
+                    account=account,
+                    target=target,
+                    action_type=join_action_type,
+                    scheduled_for=join_at,
+                    now=now,
+                    metadata={
+                        "policy_id": policy.id,
+                        "behavior_profile": policy.behavior_profile,
+                        "join_mode": "folder_one_click" if join_action_type == WarmupAction.ActionType.JOIN_FOLDER else "gradual_channel",
+                    },
                 )
-            _append_action(
-                actions,
-                plan=plan,
-                account=account,
-                target=target,
-                action_type=join_action_type,
-                scheduled_for=join_at,
-                now=now,
-                metadata={
-                    "policy_id": policy.id,
-                    "behavior_profile": policy.behavior_profile,
-                    "join_mode": "folder_one_click" if join_action_type == WarmupAction.ActionType.JOIN_FOLDER else "gradual_channel",
-                },
-            )
+                cursor = join_at
 
-            read_at = next_active_time(policy, join_at + timedelta(seconds=random.randint(policy.read_min_seconds, policy.read_max_seconds)))
-            _append_action(
-                actions,
-                plan=plan,
-                account=account,
-                target=target,
-                action_type=WarmupAction.ActionType.READ,
-                scheduled_for=read_at,
-                now=now,
-                metadata={"read_seconds": random.randint(policy.read_min_seconds, policy.read_max_seconds)},
-            )
+            if policy.enable_read_channels:
+                read_at = next_active_time(policy, cursor + timedelta(seconds=random.randint(policy.read_min_seconds, policy.read_max_seconds)))
+                _append_action(
+                    actions,
+                    plan=plan,
+                    account=account,
+                    target=target,
+                    action_type=WarmupAction.ActionType.READ,
+                    scheduled_for=read_at,
+                    now=now,
+                    metadata={"read_seconds": random.randint(policy.read_min_seconds, policy.read_max_seconds)},
+                )
+                cursor = read_at
 
-            if reactions_today < limits["max_reactions_per_day"] and random.randint(1, 100) <= limits["reaction_probability"]:
-                reaction_at = next_active_time(policy, read_at + timedelta(seconds=random.randint(30, 240)))
+            if policy.enable_reactions and reactions_today < limits["max_reactions_per_day"] and random.randint(1, 100) <= limits["reaction_probability"]:
+                reaction_at = next_active_time(policy, cursor + timedelta(seconds=random.randint(30, 240)))
                 _append_action(
                     actions,
                     plan=plan,
@@ -595,8 +648,8 @@ def start_warmup_plan(plan: WarmupPlan) -> WarmupPlan:
                     metadata={"reaction": random.choice(REACTIONS)},
                 )
                 reactions_today += 1
+                cursor = reaction_at
 
-            cursor = read_at
             for flag_name, action_type in SCENARIO_FLAGS:
                 if not getattr(policy, flag_name):
                     continue
@@ -993,6 +1046,12 @@ async def _view_dialogs_operation(app):
     return {"dialogs": len(dialogs), "chats": dialogs}
 
 
+async def _account_dialog_operation(app):
+    dialogs = await _dialog_snapshots(app, limit=12)
+    peers = [dialog["title"] for dialog in dialogs if dialog.get("title")]
+    return {"checked": True, "dialogs": len(dialogs), "peers": peers[:8]}
+
+
 async def _channel_scroll_operation(app, target: WarmupTarget):
     if target.target_type == WarmupTarget.TargetType.FOLDER:
         chats = await _folder_dialog_chats(app, limit=5)
@@ -1098,9 +1157,30 @@ async def _profile_view_operation(app, target: WarmupTarget):
     return {"chat_id": getattr(chat, "id", None), "title": getattr(chat, "title", "") or getattr(chat, "username", "")}
 
 
+async def _story_view_operation(app, target: WarmupTarget):
+    chat = await app.get_chat(_target_ref(target))
+    return {
+        "checked": True,
+        "chat_id": getattr(chat, "id", None),
+        "title": _chat_title(chat),
+        "stories": 0,
+    }
+
+
 async def _settings_check_operation(app):
     me = await app.get_me()
     return {"user_id": getattr(me, "id", None), "username": getattr(me, "username", "") or ""}
+
+
+async def _trust_boost_operation(app, target: WarmupTarget):
+    dialogs = await _dialog_snapshots(app, limit=5)
+    chat = await app.get_chat(_target_ref(target))
+    return {
+        "checked": True,
+        "target": _chat_title(chat),
+        "dialogs": len(dialogs),
+        "signals": ["перегляд діалогів", "перевірка профілю", "читання без дій"],
+    }
 
 
 async def _scheduled_message_check_operation(app):
@@ -1120,6 +1200,8 @@ def _operation_for_action(action: WarmupAction):
         return lambda app: _read_operation(app, action.target)
     if action.action_type == WarmupAction.ActionType.VIEW_DIALOGS:
         return lambda app: _view_dialogs_operation(app)
+    if action.action_type == WarmupAction.ActionType.ACCOUNT_DIALOG:
+        return lambda app: _account_dialog_operation(app)
     if action.action_type == WarmupAction.ActionType.CHANNEL_SCROLL:
         return lambda app: _channel_scroll_operation(app, action.target)
     if action.action_type == WarmupAction.ActionType.MARK_READ:
@@ -1146,6 +1228,10 @@ def _operation_for_action(action: WarmupAction):
         return lambda app: _typing_operation(app, action.target)
     if action.action_type == WarmupAction.ActionType.PROFILE_VIEW:
         return lambda app: _profile_view_operation(app, action.target)
+    if action.action_type == WarmupAction.ActionType.STORY_VIEW:
+        return lambda app: _story_view_operation(app, action.target)
+    if action.action_type == WarmupAction.ActionType.TRUST_BOOST:
+        return lambda app: _trust_boost_operation(app, action.target)
     if action.action_type in {
         WarmupAction.ActionType.SETTINGS_CHECK,
         WarmupAction.ActionType.GRADUAL_PROFILE_CHECK,

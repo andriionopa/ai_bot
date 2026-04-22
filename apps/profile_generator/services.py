@@ -354,6 +354,9 @@ def apply_profile_draft(draft: ProfileDraft) -> ProfileDraft:
             event_type=AccountHealthEvent.EventType.SUCCESS,
             metadata={"source": "profile_generator", "draft_id": draft.id},
         )
+        if draft.birth_date and account.birth_date != draft.birth_date:
+            account.birth_date = draft.birth_date
+            account.save(update_fields=["birth_date"])
         draft.mark_applied()
     except Exception as exc:
         classified = classify_runtime_exception(exc)

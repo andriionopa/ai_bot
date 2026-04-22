@@ -60,7 +60,12 @@ SECRET_KEY = env(
 DEBUG = env_bool("DJANGO_DEBUG", True)
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost,0.0.0.0")
 CSRF_TRUSTED_ORIGINS = env_list(
-    "DJANGO_CSRF_TRUSTED_ORIGINS", "http://127.0.0.1:8000,http://localhost:8000"
+    "DJANGO_CSRF_TRUSTED_ORIGINS",
+    "http://127.0.0.1:8000,http://localhost:8000,http://127.0.0.1:3001,http://localhost:3001",
+)
+CORS_ALLOWED_ORIGINS = env_list(
+    "DJANGO_CORS_ALLOWED_ORIGINS",
+    ",".join(CSRF_TRUSTED_ORIGINS),
 )
 
 INSTALLED_APPS = [
@@ -82,6 +87,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "config.middleware.LocalFrontendCorsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -170,7 +176,7 @@ GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID")
 GOOGLE_OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET")
 GOOGLE_OAUTH_REDIRECT_URI = env("GOOGLE_OAUTH_REDIRECT_URI")
 BACKEND_URL = env("BACKEND_URL", "http://127.0.0.1:8000")
-FRONTEND_URL = env("FRONTEND_URL", BACKEND_URL)
+FRONTEND_URL = env("FRONTEND_URL", "http://127.0.0.1:3001")
 
 PROFILE_TEXT_BASE_URL = env("PROFILE_TEXT_BASE_URL")
 PROFILE_TEXT_API_KEY = env("PROFILE_TEXT_API_KEY")
