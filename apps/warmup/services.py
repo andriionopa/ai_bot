@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 import re
@@ -73,6 +74,17 @@ JOIN_ACTION_TYPES = {
     WarmupAction.ActionType.JOIN_FOLDER,
 }
 NON_JOIN_ACTION_TYPES = tuple(action_type for _flag, action_type in SCENARIO_FLAGS)
+MESSAGE_SENDING_ACTION_TYPES = {
+    WarmupAction.ActionType.ACCOUNT_DIALOG,
+    WarmupAction.ActionType.FORWARD_MESSAGE,
+    WarmupAction.ActionType.SAVED_NOTE,
+    WarmupAction.ActionType.SCHEDULED_MESSAGE_CHECK,
+}
+WARMUP_CHAT_SAMPLE_MIN = 2
+WARMUP_CHAT_SAMPLE_MAX = 3
+PASSIVE_SCAN_CHAT_LIMIT = 3
+PASSIVE_SCAN_HISTORY_LIMIT = 20
+PASSIVE_SCAN_PERFORM_LIMIT = 5
 BEHAVIOR_CAPS = {
     WarmupPolicy.BehaviorProfile.SAFE: {"daily_max": 15, "reaction_probability": 25, "actions_per_hour": 8, "actions_per_day": 60},
     WarmupPolicy.BehaviorProfile.BALANCED: {"daily_max": 30, "reaction_probability": 45, "actions_per_hour": 15, "actions_per_day": 100},
@@ -122,6 +134,109 @@ def _target_label(target: WarmupTarget | None) -> str:
     return f"{target.title} ({target.value})"
 
 
+def _action_warmup_source(action: WarmupAction) -> str:
+    metadata_source = action.metadata.get("warmup_source")
+    if metadata_source:
+        return metadata_source
+    policy = getattr(getattr(action, "plan", None), "policy", None)
+    return getattr(policy, "warmup_source", WarmupPolicy.WarmupSource.TARGETS)
+
+
+def _action_place_label(action: WarmupAction) -> str:
+    if action.action_type in JOIN_ACTION_TYPES:
+        return _target_label(action.target)
+    if action.action_type in {
+        WarmupAction.ActionType.SAVED_NOTE,
+        WarmupAction.ActionType.SCHEDULED_MESSAGE_CHECK,
+    }:
+        return "Збережене"
+    if _action_warmup_source(action) == WarmupPolicy.WarmupSource.SUBSCRIPTIONS:
+        return "підписках акаунта"
+    return _target_label(action.target)
+
+
+def _collect_result_places(action: WarmupAction, result: dict[str, object]) -> list[str]:
+    places: list[str] = []
+
+    def _push(value):
+        if not value:
+            return
+        text = str(value).strip()
+        if text and text not in places:
+            places.append(text)
+
+    if action.action_type == WarmupAction.ActionType.JOIN_FOLDER:
+        for name in result.get("peer_titles", [])[:8]:
+            _push(name)
+        if places:
+            return places
+
+    if action.action_type == WarmupAction.ActionType.JOIN_CHANNEL:
+        _push(result.get("title") or result.get("username") or result.get("id"))
+        if places:
+            return places
+
+    _push(result.get("chat"))
+    _push(result.get("profile_checked"))
+    _push(result.get("target"))
+    _push(result.get("story_owner"))
+
+    chats = result.get("chats")
+    if isinstance(chats, list):
+        for item in chats[:3]:
+            if isinstance(item, dict):
+                _push(item.get("title"))
+            else:
+                _push(item)
+
+    for title in (result.get("dialog_titles") or [])[:8]:
+        _push(title)
+
+    if action.action_type in {
+        WarmupAction.ActionType.SAVED_NOTE,
+        WarmupAction.ActionType.SCHEDULED_MESSAGE_CHECK,
+        WarmupAction.ActionType.FORWARD_MESSAGE,
+    }:
+        _push("Збережене")
+    if action.action_type in {
+        WarmupAction.ActionType.SETTINGS_CHECK,
+        WarmupAction.ActionType.GRADUAL_PROFILE_CHECK,
+    }:
+        _push("Власний профіль")
+
+    return places
+
+
+def _result_place_label(action: WarmupAction, result: dict[str, object]) -> str:
+    places = _collect_result_places(action, result)
+    if not places:
+        return _action_place_label(action)
+    if len(places) == 1:
+        return places[0]
+    return ", ".join(places[:3])
+
+
+def _shorten_text(value: object, limit: int = 220) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(0, limit - 1)].rstrip()}…"
+
+
+def _brief_titles(items, *, key: str | None = None, limit: int = 2) -> str:
+    titles = []
+    for item in items[:limit]:
+        if isinstance(item, dict):
+            value = item.get(key or "title")
+        else:
+            value = item
+        if value:
+            titles.append(str(value))
+    extra = max(0, len(items) - len(titles))
+    suffix = f" + ще {extra}" if extra else ""
+    return ", ".join(titles) + suffix if titles else ""
+
+
 def _format_delay(seconds: int) -> str:
     if seconds < 60:
         return f"{seconds} с"
@@ -152,7 +267,17 @@ def _queued_message(action: WarmupAction) -> str:
     scheduled_at = timezone.localtime(action.scheduled_for).strftime("%H:%M:%S")
     return (
         f"{emoji} Заплановано: {action.account.label} → {label} "
-        f"у «{_target_label(action.target)}» о {scheduled_at} "
+        f"у «{_action_place_label(action)}» о {scheduled_at} "
+        f"(затримка {_format_delay(action.delay_seconds)})"
+    )
+
+
+def _queued_cycle_message(action: WarmupAction) -> str:
+    emoji, label = _action_label(action.action_type)
+    scheduled_at = timezone.localtime(action.scheduled_for).strftime("%H:%M:%S")
+    return (
+        f"🔁 Заплановано (наступний цикл): {action.account.label} → {label} "
+        f"у «{_action_place_label(action)}» о {scheduled_at} "
         f"(затримка {_format_delay(action.delay_seconds)})"
     )
 
@@ -167,93 +292,173 @@ def _started_message(action: WarmupAction) -> str:
     if action.action_type == WarmupAction.ActionType.INLINE_BOT_CHECK:
         details.append(f"бот @{action.metadata.get('bot') or 'gif'}, запит «{action.metadata.get('query') or 'cat'}»")
     suffix = f" | {'; '.join(details)}" if details else ""
-    return f"{emoji} Виконується: {action.account.label} зараз робить «{label}» у «{_target_label(action.target)}»{suffix}"
+    return f"{emoji} Виконується: {action.account.label} зараз робить «{label}» у «{_action_place_label(action)}»{suffix}"
 
 
 def _result_details(action: WarmupAction, result: dict[str, object]) -> str:
     if action.action_type in {WarmupAction.ActionType.JOIN_CHANNEL, WarmupAction.ActionType.JOIN_FOLDER}:
         if action.action_type == WarmupAction.ActionType.JOIN_FOLDER:
             joined = result.get("joined_count", 0)
+            joined_confirmed = result.get("joined_confirmed_count")
             already = result.get("already_count", 0)
+            skipped = result.get("skipped_count", 0)
             names = ", ".join(result.get("peer_titles", [])[:5])
             suffix = f": {names}" if names else ""
             if result.get("already") and not joined:
                 return f"папка «{result.get('folder_title') or action.target.title}» вже додана, нових чатів немає"
-            return f"додав з папки «{result.get('folder_title') or action.target.title}» {joined} чатів/каналів, вже було {already}{suffix}"
+            confirmed_suffix = ""
+            if joined_confirmed is not None:
+                confirmed_suffix = f", підтверджено у діалогах {joined_confirmed}"
+            skipped_suffix = f", пропущено {skipped}" if skipped else ""
+            return (
+                f"додав з папки «{result.get('folder_title') or action.target.title}» "
+                f"{joined} чатів/каналів{confirmed_suffix}{skipped_suffix}, вже було {already}{suffix}"
+            )
         title = result.get("title") or result.get("username") or result.get("id") or action.target.title
         return f"приєднався/відкрив target «{title}»"
     if action.action_type == WarmupAction.ActionType.READ:
         chats = result.get("chats") or []
         if chats:
-            names = ", ".join(f"{chat.get('title')} ({chat.get('messages', 0)} пов.)" for chat in chats[:5])
-            return f"прочитав {result.get('messages', 0)} повідомлень у чатах: {names}"
+            return f"прочитав {result.get('messages', 0)} пов. у {len(chats)} чатах: {_brief_titles(chats)}"
         return f"прочитав {result.get('messages', 0)} повідомлень"
     if action.action_type == WarmupAction.ActionType.REACTION:
         reaction = result.get("reaction") or action.metadata.get("reaction") or "👍"
         message_id = result.get("message_id") or "не знайдено"
-        return f"поставив реакцію {reaction} на пост #{message_id}"
+        chat = result.get("chat")
+        suffix = f" у чаті «{chat}»" if chat else ""
+        return f"поставив реакцію {reaction} на пост #{message_id}{suffix}"
     if action.action_type == WarmupAction.ActionType.CHANNEL_SCROLL:
         chats = result.get("chats") or []
         if chats:
-            names = ", ".join(f"{chat.get('title')} ({chat.get('scrolled_messages', 0)} пов.)" for chat in chats[:5])
-            return f"прокрутив {result.get('scrolled_messages', 0)} повідомлень у чатах: {names}"
+            return f"прокрутив {result.get('scrolled_messages', 0)} пов. у {len(chats)} чатах: {_brief_titles(chats)}"
         return f"прокрутив {result.get('scrolled_messages', 0)} повідомлень"
     if action.action_type == WarmupAction.ActionType.MARK_READ:
         chats = result.get("chats") or []
-        return f"позначив як прочитано: {', '.join(chats[:8])}" if chats else "позначив історію як прочитану"
+        return f"позначив прочитаним {len(chats)} чат(и): {_brief_titles(chats)}" if chats else "позначив історію як прочитану"
     if action.action_type == WarmupAction.ActionType.VIEW_DIALOGS:
         chats = result.get("chats") or []
         if chats:
-            names = ", ".join(
-                f"{chat.get('title')} [{chat.get('type') or 'chat'}, unread={chat.get('unread_messages_count', 0)}]"
-                for chat in chats[:10]
-            )
-            return f"переглянув {result.get('dialogs', 0)} діалогів: {names}"
+            names = ", ".join(f"{chat.get('title')} unread={chat.get('unread_messages_count', 0)}" for chat in chats[:2])
+            suffix = f" + ще {len(chats) - 2}" if len(chats) > 2 else ""
+            return f"переглянув {result.get('dialogs', 0)} діалоги: {names}{suffix}"
         return f"переглянув {result.get('dialogs', 0)} діалогів"
     if action.action_type == WarmupAction.ActionType.ACCOUNT_DIALOG:
+        if result.get("sent"):
+            return (
+                f"створив діалог між акаунтами: надіслав «{result.get('text')}» "
+                f"до «{result.get('peer')}»"
+            )
         peers = result.get("peers") or []
         if peers:
             return f"перевірив можливі діалоги між акаунтами: {', '.join(peers[:8])}"
-        return "діалоги між акаунтами не запускались: потрібно 2+ акаунти у плані"
+        reason = result.get("reason") or "потрібно 2+ акаунти у плані"
+        return f"діалоги між акаунтами не запускались: {reason}"
     if action.action_type == WarmupAction.ActionType.STORY_VIEW:
-        return f"перевірив сторіс у «{result.get('title') or action.target.title}», доступних сторіс {result.get('stories', 0)}"
+        owner = result.get("story_owner") or result.get("title") or action.target.title
+        story_items = result.get("story_items") or []
+        items_suffix = ""
+        if story_items:
+            items_suffix = "; " + ", ".join(
+                f"{item.get('title')} max_id={item.get('max_id') or '-'}"
+                for item in story_items[:5]
+            )
+        return f"перевірив сторіс у «{owner}», доступних сторіс {result.get('stories', 0)}{items_suffix}"
     if action.action_type == WarmupAction.ActionType.TRUST_BOOST:
         signals = ", ".join(result.get("signals", []) or [])
-        return f"зробив trust-сценарій: {signals or 'profile, read, dialogs'}"
+        dialogs = result.get("dialog_titles") or []
+        dialogs_suffix = f"; діалоги: {', '.join(dialogs[:5])}" if dialogs else ""
+        profile = result.get("profile_checked")
+        profile_suffix = f"; профіль: «{profile}»" if profile else ""
+        return f"зробив trust-сценарій: {signals or 'profile, read, dialogs'}{profile_suffix}{dialogs_suffix}"
     if action.action_type == WarmupAction.ActionType.MESSAGE_SEARCH:
+        chats = result.get("chats") or []
+        if chats:
+            return f"пошук «{result.get('query')}»: {result.get('matches', 0)} збігів у {len(chats)} чатах"
         return f"пошук «{result.get('query')}»: знайдено {result.get('matches', 0)}"
     if action.action_type == WarmupAction.ActionType.FORWARD_MESSAGE:
-        return f"переслав пост #{result.get('message_id')}" if result.get("forwarded") else "нічого не переслав: історія порожня"
+        if result.get("saved_fallback"):
+            chat = result.get("chat")
+            suffix = f" з чату «{chat}»" if chat else ""
+            preview = result.get("preview")
+            preview_suffix = f"; текст: «{preview}»" if preview else ""
+            return (
+                f"чат забороняє forward, тому зберіг fallback у «Збережене» "
+                f"#{result.get('saved_message_id')} для поста #{result.get('message_id')}{suffix}{preview_suffix}"
+            )
+        if result.get("forwarded"):
+            chat = result.get("chat")
+            suffix = f" з чату «{chat}»" if chat else ""
+            preview = result.get("preview")
+            preview_suffix = f"; текст: «{preview}»" if preview else ""
+            return f"переслав пост #{result.get('message_id')}{suffix}{preview_suffix}"
+        return "нічого не переслав: історія порожня"
     if action.action_type == WarmupAction.ActionType.SAVED_NOTE:
         return f"створив нотатку #{result.get('saved_message_id')}"
     if action.action_type in PASSIVE_SCAN_ACTIONS:
+        chats = result.get("chats") or []
+        matched_items = result.get("matched_items") or []
+        performed_items = result.get("performed_items") or []
+        items_suffix = ""
+        if performed_items:
+            rendered = ", ".join(
+                f"{item.get('chat')}#{item.get('message_id')} ({item.get('media_type')})"
+                for item in performed_items[:2]
+            )
+            items_suffix = f"; виконано: {rendered}"
+        elif matched_items:
+            rendered = ", ".join(
+                f"{item.get('chat')}#{item.get('message_id')}"
+                for item in matched_items[:2]
+            )
+            items_suffix = f"; приклади: {rendered}"
+        if chats:
+            action_word = "знайшов і відкрив" if performed_items else "перевірив"
+            return (
+                f"{action_word}: {len(chats)} чат(и), {result.get('seen', 0)} пов., "
+                f"{result.get('matched', 0)} збігів{items_suffix}"
+            )
         return f"перевірив {result.get('seen', 0)} повідомлень, збігів {result.get('matched', 0)}"
     if action.action_type in {WarmupAction.ActionType.INLINE_BOT_CHECK, WarmupAction.ActionType.GIF_SEARCH}:
-        return f"inline @{result.get('bot')}: результатів {result.get('results', 0)} за запитом «{result.get('query')}»"
+        first_id = result.get("first_result_id")
+        first_type = result.get("first_result_type")
+        first_suffix = f"; first_result id={first_id}, type={first_type or '-'}" if first_id else ""
+        return (
+            f"inline @{result.get('bot')}: результатів {result.get('results', 0)} "
+            f"за запитом «{result.get('query')}»{first_suffix}"
+        )
     if action.action_type == WarmupAction.ActionType.TYPING_SIMULATION:
+        chat = result.get("chat")
+        if chat:
+            return f"показав статус набору повідомлення у чаті «{chat}»"
         return "показав статус набору повідомлення"
     if action.action_type == WarmupAction.ActionType.PROFILE_VIEW:
         return f"переглянув профіль/чат «{result.get('title') or result.get('chat_id')}»"
     if action.action_type in {WarmupAction.ActionType.SETTINGS_CHECK, WarmupAction.ActionType.GRADUAL_PROFILE_CHECK}:
         return f"перевірив власний профіль user_id={result.get('user_id')}, username={result.get('username') or '-'}"
     if action.action_type == WarmupAction.ActionType.SCHEDULED_MESSAGE_CHECK:
-        return f"створив відкладене повідомлення #{result.get('scheduled_message_id')}"
+        chat = result.get("chat") or "Збережене"
+        text = result.get("text") or ""
+        scheduled_for = result.get("scheduled_for") or ""
+        text_suffix = f"; текст: «{text}»" if text else ""
+        date_suffix = f"; дата: {scheduled_for}" if scheduled_for else ""
+        return f"створив відкладене повідомлення #{result.get('scheduled_message_id')} у «{chat}»{text_suffix}{date_suffix}"
     return ", ".join(f"{key}={value}" for key, value in result.items()) or "дію виконано"
 
 
 def _success_message(action: WarmupAction, result: dict[str, object]) -> str:
     emoji, label = _action_label(action.action_type)
-    return f"✅ {emoji} Готово: {action.account.label} виконав «{label}» у «{_target_label(action.target)}» — {_result_details(action, result)}"
+    message = f"✅ {emoji} Готово: {action.account.label} виконав «{label}» у «{_result_place_label(action, result)}» — {_result_details(action, result)}"
+    return _shorten_text(message, 260)
 
 
 def _failed_message(action: WarmupAction, error: str) -> str:
     emoji, label = _action_label(action.action_type)
-    return f"❌ {emoji} Помилка: {action.account.label} не виконав «{label}» у «{_target_label(action.target)}» — {error}"
+    return f"❌ {emoji} Помилка: {action.account.label} не виконав «{label}» у «{_action_place_label(action)}» — {error}"
 
 
 def _skipped_message(action: WarmupAction, reason: str) -> str:
     emoji, label = _action_label(action.action_type)
-    return f"⚠️ {emoji} Пропущено: {action.account.label} не робить «{label}» у «{_target_label(action.target)}» — {reason}"
+    return f"⚠️ {emoji} Пропущено: {action.account.label} не робить «{label}» у «{_action_place_label(action)}» — {reason}"
 
 
 def log_warmup_event(
@@ -347,14 +552,25 @@ def _account_actions_this_hour(account: TelegramAccount, now) -> int:
     ).count()
 
 
+def _is_within_active_window(policy: WarmupPolicy, local_candidate) -> bool:
+    start_hour = policy.active_start_hour
+    end_hour = policy.active_end_hour
+    if start_hour == end_hour:
+        return True
+    if start_hour < end_hour:
+        return start_hour <= local_candidate.hour <= end_hour
+    return local_candidate.hour >= start_hour or local_candidate.hour <= end_hour
+
+
 def next_active_time(policy: WarmupPolicy, candidate):
     local_candidate = timezone.localtime(candidate)
     start_hour = policy.active_start_hour
-    end_hour = policy.active_end_hour
-    if start_hour <= local_candidate.hour <= end_hour:
+    if _is_within_active_window(policy, local_candidate):
         return candidate
 
-    if local_candidate.hour < start_hour:
+    if start_hour < policy.active_end_hour and local_candidate.hour < start_hour:
+        adjusted = local_candidate.replace(hour=start_hour, minute=random.randint(0, 45), second=0, microsecond=0)
+    elif start_hour > policy.active_end_hour and local_candidate.hour < start_hour and local_candidate.hour > policy.active_end_hour:
         adjusted = local_candidate.replace(hour=start_hour, minute=random.randint(0, 45), second=0, microsecond=0)
     else:
         tomorrow = local_candidate + timedelta(days=1)
@@ -377,12 +593,25 @@ def schedule_action_dispatch(action: WarmupAction) -> None:
     try:
         from apps.warmup.tasks import execute_warmup_action_task
 
-        countdown = max(0, int((action.scheduled_for - timezone.now()).total_seconds()))
-        result = execute_warmup_action_task.apply_async(args=[action.id], countdown=countdown)
+        result = execute_warmup_action_task.apply_async(args=[action.id], eta=action.scheduled_for)
         WarmupAction.objects.filter(pk=action.pk).update(celery_task_id=result.id)
         action.celery_task_id = result.id
-    except Exception:
-        # Celery may be unavailable in local/dev. Periodic due-action processing still picks it up.
+    except Exception as exc:
+        log_warmup_event(
+            owner=action.owner,
+            level=WarmupLog.Level.WARNING,
+            plan=action.plan,
+            action=action,
+            account=action.account,
+            message=(
+                "⚠️ Черга Celery недоступна: дію залишено в queued. "
+                "Перевірте worker/broker або виконайте run-due вручну."
+            ),
+            metadata={
+                **_action_context(action),
+                "queue_dispatch_error": str(exc)[:240],
+            },
+        )
         return
 
 
@@ -426,16 +655,20 @@ def _append_action(
 
 
 def _scenario_metadata(policy: WarmupPolicy, action_type: str) -> dict[str, object]:
-    metadata: dict[str, object] = {"policy_id": policy.id, "behavior_profile": policy.behavior_profile}
+    metadata: dict[str, object] = {
+        "policy_id": policy.id,
+        "behavior_profile": policy.behavior_profile,
+        "warmup_source": policy.warmup_source,
+    }
     if action_type == WarmupAction.ActionType.MESSAGE_SEARCH:
-        metadata["query"] = policy.search_query or "crypto"
+        metadata["query"] = (policy.search_query or "").strip()
     elif action_type == WarmupAction.ActionType.INLINE_BOT_CHECK:
         metadata["bot"] = policy.inline_bot_username or "gif"
-        metadata["query"] = policy.search_query or "cat"
+        metadata["query"] = (policy.search_query or "").strip()
     elif action_type == WarmupAction.ActionType.GIF_SEARCH:
-        metadata["query"] = policy.search_query or "cat"
+        metadata["query"] = (policy.search_query or "").strip()
     elif action_type == WarmupAction.ActionType.SAVED_NOTE:
-        metadata["note"] = "warmup note"
+        metadata["note"] = "Нотатка"
     return metadata
 
 
@@ -443,9 +676,46 @@ def _enabled_cycle_action_types(policy: WarmupPolicy) -> list[str]:
     action_types = [action_type for flag_name, action_type in SCENARIO_FLAGS if getattr(policy, flag_name)]
     if policy.enable_read_channels:
         action_types.append(WarmupAction.ActionType.READ)
+    if not (policy.search_query or "").strip():
+        action_types = [
+            action_type
+            for action_type in action_types
+            if action_type
+            not in {
+                WarmupAction.ActionType.MESSAGE_SEARCH,
+                WarmupAction.ActionType.GIF_SEARCH,
+                WarmupAction.ActionType.INLINE_BOT_CHECK,
+            }
+        ]
     if not action_types:
         return [WarmupAction.ActionType.VIEW_DIALOGS]
     return action_types
+
+
+def _account_sent_messages_today(account: TelegramAccount, now) -> int:
+    day_start = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.get_current_timezone())
+    return WarmupAction.objects.filter(
+        account=account,
+        action_type__in=MESSAGE_SENDING_ACTION_TYPES,
+        status__in=[WarmupAction.Status.SUCCEEDED, WarmupAction.Status.QUEUED, WarmupAction.Status.RUNNING],
+        scheduled_for__gte=day_start,
+    ).count()
+
+
+def _filter_message_sending_actions(policy: WarmupPolicy, action_types: list[str], *, sent_messages_today: int) -> list[str]:
+    if policy.messages_per_day <= 0 or sent_messages_today >= policy.messages_per_day:
+        filtered = [action_type for action_type in action_types if action_type not in MESSAGE_SENDING_ACTION_TYPES]
+        return filtered or [WarmupAction.ActionType.VIEW_DIALOGS]
+    remaining = policy.messages_per_day - sent_messages_today
+    sending_seen = 0
+    filtered = []
+    for action_type in action_types:
+        if action_type in MESSAGE_SENDING_ACTION_TYPES:
+            sending_seen += 1
+            if sending_seen > remaining:
+                continue
+        filtered.append(action_type)
+    return filtered or [WarmupAction.ActionType.VIEW_DIALOGS]
 
 
 def _pick_cycle_action_type(policy: WarmupPolicy, *, previous_action_type: str | None = None, allow_reaction: bool = True) -> str:
@@ -465,6 +735,17 @@ def _random_cycle_target(plan: WarmupPlan, preferred_target: WarmupTarget | None
     if preferred_target and preferred_target in targets and random.randint(1, 100) <= 45:
         return preferred_target
     return random.choice(targets)
+
+
+def _ordered_plan_targets(plan: WarmupPlan, policy: WarmupPolicy, daily_limit: int) -> list[WarmupTarget]:
+    targets = list(plan.targets.filter(status=WarmupTarget.Status.ACTIVE))
+    folders = [target for target in targets if target.target_type == WarmupTarget.TargetType.FOLDER]
+    channels = [target for target in targets if target.target_type != WarmupTarget.TargetType.FOLDER]
+    random.shuffle(folders)
+    random.shuffle(channels)
+    if folders and policy.allow_folder_one_click:
+        return folders + channels[:daily_limit]
+    return channels[:daily_limit]
 
 
 def _create_cycle_action(
@@ -488,21 +769,6 @@ def _create_cycle_action(
         metadata=metadata or {},
     )
     schedule_action_dispatch(action)
-    log_warmup_event(
-        owner=plan.owner,
-        level=WarmupLog.Level.INFO,
-        plan=plan,
-        action=action,
-        account=account,
-        message=_queued_message(action),
-        metadata={
-            **_action_context(action),
-            "scheduled_for": action.scheduled_for.isoformat(),
-            "delay_seconds": action.delay_seconds,
-            "target": action.target.value,
-            "cycle": True,
-        },
-    )
     return action
 
 
@@ -518,6 +784,8 @@ def schedule_next_cycle_action(previous_action: WarmupAction, *, after_error: bo
     account = TelegramAccount.objects.filter(pk=previous_action.account_id, is_attached=True).first()
     if account is None or not account.is_connected:
         return None
+    if get_account_runtime_block_reason(account):
+        return None
     target = _random_cycle_target(plan, previous_action.target)
     if target is None:
         return None
@@ -527,12 +795,19 @@ def schedule_next_cycle_action(previous_action: WarmupAction, *, after_error: bo
     limits = clamp_policy(policy)
     delay_min = policy.retry_min_seconds if after_error else policy.delay_min_seconds
     delay_max = policy.retry_max_seconds if after_error else policy.delay_max_seconds
+    enabled_types_count = max(1, len(_enabled_cycle_action_types(policy)))
+    session_step_cap = max(20, int((policy.session_duration_minutes * 60) / enabled_types_count))
     if _account_actions_today(account, now) >= limits["actions_per_day"]:
         scheduled_for = _next_day_active_time(policy, now)
     else:
         base_delay = random.randint(delay_min, delay_max)
+        if not after_error:
+            base_delay = min(base_delay, session_step_cap)
         if policy.random_breaks and random.randint(1, 100) <= 18:
-            base_delay += random.randint(900, 3600)
+            break_delay = random.randint(900, 3600)
+            if not after_error:
+                break_delay = min(break_delay, max(30, session_step_cap))
+            base_delay += break_delay
         if _account_actions_this_hour(account, now) >= limits["actions_per_hour"]:
             next_hour = timezone.localtime(now + timedelta(hours=1)).replace(minute=random.randint(0, 20), second=0, microsecond=0)
             scheduled_for = next_active_time(policy, next_hour.astimezone(timezone.get_current_timezone()))
@@ -545,11 +820,17 @@ def schedule_next_cycle_action(previous_action: WarmupAction, *, after_error: bo
         status=WarmupAction.Status.SUCCEEDED,
         finished_at__gte=day_start,
     ).count()
-    action_type = _pick_cycle_action_type(
+    action_types = _enabled_cycle_action_types(policy)
+    action_types = _filter_message_sending_actions(
         policy,
-        previous_action_type=previous_action.action_type,
-        allow_reaction=reactions_today < policy.max_reactions_per_day,
+        action_types,
+        sent_messages_today=_account_sent_messages_today(account, now),
     )
+    if policy.enable_reactions and reactions_today < policy.max_reactions_per_day and random.randint(1, 100) <= limits["reaction_probability"]:
+        action_types.append(WarmupAction.ActionType.REACTION)
+    if previous_action.action_type and len(action_types) > 1:
+        action_types = [action_type for action_type in action_types if action_type != previous_action.action_type] or action_types
+    action_type = random.choice(action_types)
     metadata = _scenario_metadata(policy, action_type)
     if action_type == WarmupAction.ActionType.REACTION:
         metadata["reaction"] = random.choice(REACTIONS)
@@ -584,18 +865,14 @@ def start_warmup_plan(plan: WarmupPlan) -> WarmupPlan:
     for account in plan.accounts.all():
         if not account.is_connected:
             continue
-        targets = list(
-            plan.targets.filter(status=WarmupTarget.Status.ACTIVE).order_by(
-                "-target_type",
-                "created_at",
-            )
-        )
         daily_limit = random.randint(limits["daily_join_min"], limits["daily_join_max"])
-        targets = targets[:daily_limit]
+        targets = _ordered_plan_targets(plan, policy, daily_limit)
         cursor = now
-        reactions_today = 0
+        planned_actions_today = 0
 
         for target in targets:
+            if planned_actions_today >= limits["actions_per_day"]:
+                break
             join_action_type = _join_action_for_target(target)
             if _policy_allows_join(policy, target):
                 if target.target_type == WarmupTarget.TargetType.FOLDER and policy.allow_folder_one_click:
@@ -620,50 +897,79 @@ def start_warmup_plan(plan: WarmupPlan) -> WarmupPlan:
                     },
                 )
                 cursor = join_at
+                planned_actions_today += 1
 
-            if policy.enable_read_channels:
-                read_at = next_active_time(policy, cursor + timedelta(seconds=random.randint(policy.read_min_seconds, policy.read_max_seconds)))
-                _append_action(
-                    actions,
-                    plan=plan,
-                    account=account,
-                    target=target,
-                    action_type=WarmupAction.ActionType.READ,
-                    scheduled_for=read_at,
-                    now=now,
-                    metadata={"read_seconds": random.randint(policy.read_min_seconds, policy.read_max_seconds)},
-                )
-                cursor = read_at
+        warmup_target = _random_cycle_target(plan) or (targets[0] if targets else None)
+        if warmup_target is not None and planned_actions_today < limits["actions_per_day"]:
+            day_start = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.get_current_timezone())
+            sent_messages_today = _account_sent_messages_today(account, now)
+            reactions_today = WarmupAction.objects.filter(
+                account=account,
+                action_type=WarmupAction.ActionType.REACTION,
+                status=WarmupAction.Status.SUCCEEDED,
+                finished_at__gte=day_start,
+            ).count()
+            action_types = _enabled_cycle_action_types(policy)
+            action_types = _filter_message_sending_actions(
+                policy,
+                action_types,
+                sent_messages_today=sent_messages_today,
+            )
+            if (
+                policy.enable_reactions
+                and reactions_today < limits["max_reactions_per_day"]
+                and WarmupAction.ActionType.REACTION not in action_types
+            ):
+                action_types.append(WarmupAction.ActionType.REACTION)
+            random.shuffle(action_types)
+            remaining_slots = max(0, limits["actions_per_day"] - planned_actions_today)
+            if remaining_slots == 0:
+                continue
+            action_types = action_types[:remaining_slots]
+            if (
+                policy.enable_reactions
+                and reactions_today < limits["max_reactions_per_day"]
+                and WarmupAction.ActionType.REACTION not in action_types
+                and action_types
+            ):
+                action_types[-1] = WarmupAction.ActionType.REACTION
+            session_window_seconds = max(60, policy.session_duration_minutes * 60)
+            session_started_at = cursor
 
-            if policy.enable_reactions and reactions_today < limits["max_reactions_per_day"] and random.randint(1, 100) <= limits["reaction_probability"]:
-                reaction_at = next_active_time(policy, cursor + timedelta(seconds=random.randint(30, 240)))
-                _append_action(
-                    actions,
-                    plan=plan,
-                    account=account,
-                    target=target,
-                    action_type=WarmupAction.ActionType.REACTION,
-                    scheduled_for=reaction_at,
-                    now=now,
-                    metadata={"reaction": random.choice(REACTIONS)},
-                )
-                reactions_today += 1
-                cursor = reaction_at
-
-            for flag_name, action_type in SCENARIO_FLAGS:
-                if not getattr(policy, flag_name):
+            for index, action_type in enumerate(action_types):
+                if planned_actions_today >= limits["actions_per_day"]:
+                    break
+                if action_type in MESSAGE_SENDING_ACTION_TYPES and sent_messages_today >= policy.messages_per_day:
                     continue
-                cursor = next_active_time(policy, cursor + timedelta(seconds=random.randint(20, 180)))
+                if action_type == WarmupAction.ActionType.READ:
+                    metadata = _scenario_metadata(policy, action_type)
+                    metadata["read_seconds"] = random.randint(policy.read_min_seconds, policy.read_max_seconds)
+                elif action_type == WarmupAction.ActionType.REACTION:
+                    metadata = _scenario_metadata(policy, action_type)
+                    metadata["reaction"] = random.choice(REACTIONS)
+                    reactions_today += 1
+                else:
+                    metadata = _scenario_metadata(policy, action_type)
+                slot_start = int((session_window_seconds * index) / max(1, len(action_types)))
+                slot_end = int((session_window_seconds * (index + 1)) / max(1, len(action_types)))
+                min_offset = 0 if index == 0 and planned_actions_today else 5
+                offset_seconds = random.randint(max(min_offset, slot_start), max(min_offset, slot_end - 1))
+                cursor = next_active_time(policy, session_started_at + timedelta(seconds=offset_seconds))
+                metadata["cycle"] = True
+                metadata["initial_cycle"] = True
                 _append_action(
                     actions,
                     plan=plan,
                     account=account,
-                    target=target,
+                    target=warmup_target,
                     action_type=action_type,
                     scheduled_for=cursor,
                     now=now,
-                    metadata=_scenario_metadata(policy, action_type),
+                    metadata=metadata,
                 )
+                planned_actions_today += 1
+                if action_type in MESSAGE_SENDING_ACTION_TYPES:
+                    sent_messages_today += 1
 
     WarmupAction.objects.filter(plan=plan, status=WarmupAction.Status.QUEUED).delete()
     created = WarmupAction.objects.bulk_create(actions)
@@ -674,28 +980,6 @@ def start_warmup_plan(plan: WarmupPlan) -> WarmupPlan:
 
     for action in created:
         schedule_action_dispatch(action)
-        log_warmup_event(
-            owner=plan.owner,
-            level=WarmupLog.Level.INFO,
-            plan=plan,
-            action=action,
-            account=action.account,
-            message=_queued_message(action),
-            metadata={
-                **_action_context(action),
-                "scheduled_for": action.scheduled_for.isoformat(),
-                "delay_seconds": action.delay_seconds,
-                "target": action.target.value,
-            },
-        )
-
-    log_warmup_event(
-        owner=plan.owner,
-        level=WarmupLog.Level.INFO,
-        plan=plan,
-        message=f"🚀 План «{plan.name}» запущено: поставлено {len(created)} дій прогріву для акаунтів, каналів, груп і чатів.",
-        metadata={"action_count": len(created)},
-    )
     return plan
 
 
@@ -743,6 +1027,8 @@ def _decode_celery_message(raw_message: bytes | str) -> dict[str, object] | None
         payload = json.loads(raw_message)
     except json.JSONDecodeError:
         return None
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return payload[0]
     return payload if isinstance(payload, dict) else None
 
 
@@ -784,6 +1070,17 @@ def purge_warmup_messages_from_redis() -> dict[str, int]:
             pipe.delete(queue_name)
             if keep:
                 pipe.rpush(queue_name, *keep)
+            pipe.execute()
+        unacked_messages = client.hgetall("unacked")
+        if unacked_messages:
+            pipe = client.pipeline()
+            for delivery_tag, message in unacked_messages.items():
+                scanned += 1
+                if not _is_warmup_celery_message(message):
+                    continue
+                removed += 1
+                pipe.hdel("unacked", delivery_tag)
+                pipe.zrem("unacked_index", delivery_tag)
             pipe.execute()
     except Exception:
         return {"redis_scanned": scanned, "redis_removed": removed, "redis_error": 1}
@@ -874,6 +1171,35 @@ def pause_warmup_plan(plan: WarmupPlan) -> WarmupPlan:
     return plan
 
 
+@transaction.atomic
+def stop_warmup_plan(plan: WarmupPlan, *, purge_redis: bool = True) -> dict[str, int | str]:
+    plan = WarmupPlan.objects.select_for_update().get(pk=plan.pk)
+    action_queryset = WarmupAction.objects.filter(plan=plan)
+    task_ids = list(action_queryset.exclude(celery_task_id="").values_list("celery_task_id", flat=True))
+    action_count = action_queryset.count()
+    log_count = WarmupLog.objects.filter(plan=plan).count()
+    plan_id = plan.id
+    plan_name = plan.name
+
+    revoked_count = _revoke_celery_tasks(task_ids)
+    redis_payload = purge_warmup_messages_from_redis() if purge_redis else {"redis_scanned": 0, "redis_removed": 0, "redis_error": 0}
+    plan.delete()
+
+    message = (
+        f"🛑 Stop: план «{plan_name}» повністю видалено із прогріву. "
+        f"Видалено {action_count} дій, {log_count} логів, відкликано {revoked_count} Celery task id."
+    )
+    metadata = {
+        "plan_id": plan_id,
+        "deleted_actions": action_count,
+        "deleted_logs": log_count,
+        "revoked": revoked_count,
+        **redis_payload,
+    }
+    publish_log_event({"level": "warning", "source": "warmup", "message": message, **metadata})
+    return {"plan_id": plan_id, "deleted_actions": action_count, "deleted_logs": log_count, "revoked": revoked_count, **redis_payload}
+
+
 def _target_ref(target: WarmupTarget) -> str:
     return target.value
 
@@ -920,6 +1246,52 @@ async def _folder_dialog_chats(app, limit: int = 5) -> list[object]:
     return chats
 
 
+async def _subscription_chats(app, limit: int = 30, sample_size: int = 5) -> list[object]:
+    chats = []
+    async for dialog in app.get_dialogs(limit=limit):
+        chat = getattr(dialog, "chat", None)
+        if chat is not None:
+            chats.append(chat)
+    random.shuffle(chats)
+    return chats[:sample_size]
+
+
+def _warmup_sample_size(max_size: int = WARMUP_CHAT_SAMPLE_MAX) -> int:
+    upper = max(WARMUP_CHAT_SAMPLE_MIN, max_size)
+    return random.randint(WARMUP_CHAT_SAMPLE_MIN, upper)
+
+
+async def _target_chats(app, target: WarmupTarget, *, folder_limit: int = 5) -> list[object]:
+    if target.target_type == WarmupTarget.TargetType.FOLDER:
+        return await _folder_dialog_chats(app, limit=folder_limit)
+    return [await app.get_chat(_target_ref(target))]
+
+
+async def _warmup_chats(app, target: WarmupTarget, source: str, *, folder_limit: int = 5, subscription_limit: int = 30) -> list[object]:
+    if source == WarmupPolicy.WarmupSource.SUBSCRIPTIONS:
+        sample_size = min(folder_limit, _warmup_sample_size(folder_limit))
+        chats = await _subscription_chats(app, limit=subscription_limit, sample_size=sample_size)
+        if chats:
+            return chats
+        # Fallback: account has no viable subscriptions yet; use target/folder source so actions are real.
+        return await _target_chats(app, target, folder_limit=folder_limit)
+    return await _target_chats(app, target, folder_limit=folder_limit)
+
+
+def _chat_history_ref(chat):
+    return getattr(chat, "username", None) or getattr(chat, "id", None)
+
+
+async def _first_message_from_chats(app, chats: list[object]):
+    for chat in chats:
+        chat_ref = _chat_history_ref(chat)
+        if chat_ref is None:
+            continue
+        async for message in app.get_chat_history(chat_ref, limit=1):
+            return chat_ref, chat, message
+    return None, None, None
+
+
 def _extract_addlist_slug(value: str) -> str:
     match = re.search(r"(?:https?://)?t\.me/addlist/([A-Za-z0-9_\-]+)", value)
     if not match:
@@ -939,6 +1311,67 @@ def _raw_peer_title(peer, *, chats_by_id: dict[int, object], users_by_id: dict[i
         title = " ".join(filter(None, [getattr(user, "first_name", ""), getattr(user, "last_name", "")])).strip()
         return title or getattr(user, "username", "") or str(peer.user_id)
     return str(peer)
+
+
+def _raw_peer_key(peer) -> tuple[str, int] | None:
+    if isinstance(peer, raw.types.PeerChannel):
+        return ("channel", peer.channel_id)
+    if isinstance(peer, raw.types.PeerChat):
+        return ("chat", peer.chat_id)
+    if isinstance(peer, raw.types.PeerUser):
+        return ("user", peer.user_id)
+    return None
+
+
+async def _dialog_peer_keys(app, limit: int = 500) -> set[tuple[str, int]]:
+    keys: set[tuple[str, int]] = set()
+    if not hasattr(app, "get_dialogs"):
+        return keys
+    async for dialog in app.get_dialogs(limit=limit):
+        chat = getattr(dialog, "chat", None)
+        if chat is None:
+            continue
+        chat_type = str(getattr(chat, "type", "") or "")
+        chat_id = abs(int(getattr(chat, "id", 0) or 0))
+        if not chat_id:
+            continue
+        if chat_type in {"channel", "supergroup"}:
+            keys.add(("channel", chat_id))
+        elif chat_type in {"group"}:
+            keys.add(("chat", chat_id))
+        else:
+            keys.add(("user", chat_id))
+    return keys
+
+
+def _expected_peer_keys(peers: list[object]) -> set[tuple[str, int]]:
+    keys: set[tuple[str, int]] = set()
+    for peer in peers:
+        key = _raw_peer_key(peer)
+        if key is not None:
+            keys.add(key)
+    return keys
+
+
+async def _confirm_joined_peer_count(
+    app,
+    *,
+    peers: list[object],
+    before_keys: set[tuple[str, int]],
+    attempts: int = 6,
+    delay_seconds: float = 0.7,
+) -> int:
+    expected_new = _expected_peer_keys(peers) - before_keys
+    if not expected_new:
+        return 0
+    confirmed = 0
+    for attempt in range(attempts):
+        after_keys = await _dialog_peer_keys(app)
+        confirmed = sum(1 for key in expected_new if key in after_keys)
+        if confirmed > 0 or attempt == attempts - 1:
+            return confirmed
+        await asyncio.sleep(delay_seconds)
+    return confirmed
 
 
 def _raw_peer_to_input_peer(peer, *, chats_by_id: dict[int, object], users_by_id: dict[int, object]):
@@ -962,9 +1395,18 @@ def _raw_peer_to_input_peer(peer, *, chats_by_id: dict[int, object], users_by_id
 async def _join_chatlist_invite_operation(app, target: WarmupTarget):
     slug = _extract_addlist_slug(target.value)
     invite = await app.invoke(raw.functions.chatlists.CheckChatlistInvite(slug=slug))
+    before_keys = await _dialog_peer_keys(app)
     chats_by_id = {getattr(chat, "id", None): chat for chat in getattr(invite, "chats", []) or []}
     users_by_id = {getattr(user, "id", None): user for user in getattr(invite, "users", []) or []}
-    peers = list(getattr(invite, "peers", None) or getattr(invite, "missing_peers", []) or [])
+    peers = list(getattr(invite, "peers", []) or [])
+    missing_peers = list(getattr(invite, "missing_peers", []) or [])
+    seen_keys = {key for key in (_raw_peer_key(peer) for peer in peers) if key is not None}
+    for peer in missing_peers:
+        key = _raw_peer_key(peer)
+        if key is None or key in seen_keys:
+            continue
+        peers.append(peer)
+        seen_keys.add(key)
     already_count = len(getattr(invite, "already_peers", []) or [])
 
     if not peers:
@@ -977,16 +1419,25 @@ async def _join_chatlist_invite_operation(app, target: WarmupTarget):
             "already": True,
         }
 
-    input_peers = [
-        _raw_peer_to_input_peer(peer, chats_by_id=chats_by_id, users_by_id=users_by_id)
-        for peer in peers
-    ]
+    input_peers = []
+    skipped_peers = []
+    for peer in peers:
+        try:
+            input_peers.append(_raw_peer_to_input_peer(peer, chats_by_id=chats_by_id, users_by_id=users_by_id))
+        except RuntimeError:
+            skipped_peers.append(_raw_peer_title(peer, chats_by_id=chats_by_id, users_by_id=users_by_id))
+    if not input_peers:
+        raise RuntimeError("У папці addlist немає peer-ів, які можна додати через API (відсутні access_hash).")
     await app.invoke(raw.functions.chatlists.JoinChatlistInvite(slug=slug, peers=input_peers))
+    joined_confirmed = await _confirm_joined_peer_count(app, peers=peers, before_keys=before_keys)
     return {
         "slug": slug,
         "folder_title": getattr(invite, "title", target.title),
         "joined_count": len(input_peers),
+        "joined_confirmed_count": joined_confirmed,
         "already_count": already_count,
+        "skipped_count": len(skipped_peers),
+        "skipped_titles": skipped_peers[:20],
         "peer_titles": [
             _raw_peer_title(peer, chats_by_id=chats_by_id, users_by_id=users_by_id)
             for peer in peers[:20]
@@ -996,7 +1447,15 @@ async def _join_chatlist_invite_operation(app, target: WarmupTarget):
 
 async def _join_operation(app, target: WarmupTarget):
     if target.target_type == WarmupTarget.TargetType.FOLDER:
-        return await _join_chatlist_invite_operation(app, target)
+        result = await _join_chatlist_invite_operation(app, target)
+        joined = int(result.get("joined_count") or 0)
+        confirmed = int(result.get("joined_confirmed_count") or 0)
+        if joined > 0 and confirmed == 0:
+            raise RuntimeError(
+                "Папку addlist прийнято, але Telegram не показав нових чатів у діалогах. "
+                "Перевірте slug addlist/доступність запрошених чатів і повторіть."
+            )
+        return result
 
     chat = await app.join_chat(_target_ref(target))
     return {
@@ -1007,9 +1466,9 @@ async def _join_operation(app, target: WarmupTarget):
     }
 
 
-async def _read_operation(app, target: WarmupTarget):
-    if target.target_type == WarmupTarget.TargetType.FOLDER:
-        chats = await _folder_dialog_chats(app, limit=5)
+async def _read_operation(app, target: WarmupTarget, source: str = WarmupPolicy.WarmupSource.TARGETS):
+    if source == WarmupPolicy.WarmupSource.SUBSCRIPTIONS or target.target_type == WarmupTarget.TargetType.FOLDER:
+        chats = await _warmup_chats(app, target, source, folder_limit=WARMUP_CHAT_SAMPLE_MAX)
         results = []
         total_messages = 0
         for chat in chats:
@@ -1034,27 +1493,76 @@ async def _read_operation(app, target: WarmupTarget):
     return {"messages": len(messages), "chats": [{"title": _chat_title(chat), "messages": len(messages)}]}
 
 
-async def _reaction_operation(app, target: WarmupTarget, reaction: str):
-    async for message in app.get_chat_history(_target_ref(target), limit=1):
-        await app.send_reaction(_target_ref(target), message.id, reaction)
-        return {"message_id": message.id, "reaction": reaction}
-    return {"message_id": None, "reaction": reaction}
+async def _reaction_operation(app, target: WarmupTarget, reaction: str, source: str = WarmupPolicy.WarmupSource.TARGETS):
+    chat_ref, chat, message = await _first_message_from_chats(app, await _warmup_chats(app, target, source))
+    if message is None:
+        return {"message_id": None, "reaction": reaction}
+    await app.send_reaction(chat_ref, message.id, reaction)
+    return {"message_id": message.id, "reaction": reaction, "chat": _chat_title(chat)}
 
 
 async def _view_dialogs_operation(app):
-    dialogs = await _dialog_snapshots(app, limit=10)
+    dialogs = await _dialog_snapshots(app, limit=_warmup_sample_size())
     return {"dialogs": len(dialogs), "chats": dialogs}
 
 
-async def _account_dialog_operation(app):
+async def _account_dialog_operation(app, action: WarmupAction | None = None):
     dialogs = await _dialog_snapshots(app, limit=12)
     peers = [dialog["title"] for dialog in dialogs if dialog.get("title")]
-    return {"checked": True, "dialogs": len(dialogs), "peers": peers[:8]}
+    if action is None:
+        return {"checked": True, "dialogs": len(dialogs), "peers": peers[:8]}
+
+    account_peers = list(
+        action.plan.accounts.exclude(pk=action.account_id).filter(
+            is_attached=True,
+            auth_state=TelegramAccount.AuthState.CONNECTED,
+        )
+    )
+    if not account_peers:
+        return {
+            "checked": True,
+            "dialogs": len(dialogs),
+            "peers": peers[:8],
+            "sent": False,
+            "reason": "потрібно 2+ підключені акаунти у плані",
+        }
+    random.shuffle(account_peers)
+    text = random.choice(("Привіт", "На зв'язку", "Ок"))
+    errors = []
+    for peer_account in account_peers:
+        peer_ref = peer_account.telegram_username or peer_account.telegram_user_id or peer_account.phone_number
+        if not peer_ref:
+            errors.append(f"{peer_account.label}: немає username/id/phone")
+            continue
+        if peer_account.telegram_username:
+            peer_ref = peer_account.telegram_username.lstrip("@")
+        try:
+            sent = await app.send_message(peer_ref, text)
+        except Exception as exc:
+            errors.append(f"{peer_account.label}: {str(exc)[:120]}")
+            continue
+        return {
+            "checked": True,
+            "dialogs": len(dialogs),
+            "peers": peers[:8],
+            "sent": True,
+            "peer": peer_account.telegram_username or peer_account.label,
+            "peer_account_id": peer_account.id,
+            "text": text,
+            "message_id": getattr(sent, "id", None),
+        }
+    return {
+        "checked": True,
+        "dialogs": len(dialogs),
+        "peers": peers[:8],
+        "sent": False,
+        "reason": "; ".join(errors[:3]) or "немає доступного peer для діалогу",
+    }
 
 
-async def _channel_scroll_operation(app, target: WarmupTarget):
-    if target.target_type == WarmupTarget.TargetType.FOLDER:
-        chats = await _folder_dialog_chats(app, limit=5)
+async def _channel_scroll_operation(app, target: WarmupTarget, source: str = WarmupPolicy.WarmupSource.TARGETS):
+    if source == WarmupPolicy.WarmupSource.SUBSCRIPTIONS or target.target_type == WarmupTarget.TargetType.FOLDER:
+        chats = await _warmup_chats(app, target, source, folder_limit=WARMUP_CHAT_SAMPLE_MAX)
         results = []
         total_messages = 0
         for chat in chats:
@@ -1075,9 +1583,9 @@ async def _channel_scroll_operation(app, target: WarmupTarget):
     return {"scrolled_messages": count, "chats": [{"title": _chat_title(chat), "scrolled_messages": count}]}
 
 
-async def _mark_read_operation(app, target: WarmupTarget):
-    if target.target_type == WarmupTarget.TargetType.FOLDER:
-        chats = await _folder_dialog_chats(app, limit=5)
+async def _mark_read_operation(app, target: WarmupTarget, source: str = WarmupPolicy.WarmupSource.TARGETS):
+    if source == WarmupPolicy.WarmupSource.SUBSCRIPTIONS or target.target_type == WarmupTarget.TargetType.FOLDER:
+        chats = await _warmup_chats(app, target, source, folder_limit=WARMUP_CHAT_SAMPLE_MAX)
         marked = []
         for chat in chats:
             chat_ref = _chat_ref(chat)
@@ -1092,25 +1600,63 @@ async def _mark_read_operation(app, target: WarmupTarget):
     return {"marked_read": True, "chats": [_chat_title(chat)]}
 
 
-async def _message_search_operation(app, target: WarmupTarget, query: str):
-    count = 0
-    async for _message in app.search_messages(_target_ref(target), query=query, limit=5):
-        count += 1
-    return {"query": query, "matches": count}
+async def _message_search_operation(app, target: WarmupTarget, query: str, source: str = WarmupPolicy.WarmupSource.TARGETS):
+    total = 0
+    results = []
+    for chat in await _warmup_chats(app, target, source, folder_limit=WARMUP_CHAT_SAMPLE_MAX):
+        chat_ref = _chat_history_ref(chat)
+        if chat_ref is None:
+            continue
+        count = 0
+        async for _message in app.search_messages(chat_ref, query=query, limit=5):
+            count += 1
+        total += count
+        results.append({"title": _chat_title(chat), "matches": count})
+    return {"query": query, "matches": total, "chats": results}
 
 
 async def _first_message(app, target: WarmupTarget):
-    async for message in app.get_chat_history(_target_ref(target), limit=1):
-        return message
-    return None
+    _chat_ref_value, _chat, message = await _first_message_from_chats(app, await _target_chats(app, target))
+    return message
 
 
-async def _forward_message_operation(app, target: WarmupTarget):
-    message = await _first_message(app, target)
+async def _forward_message_operation(app, target: WarmupTarget, source: str = WarmupPolicy.WarmupSource.TARGETS):
+    chat_ref, chat, message = await _first_message_from_chats(app, await _warmup_chats(app, target, source))
     if message is None:
         return {"forwarded": False, "reason": "empty_history"}
-    await app.forward_messages("me", _target_ref(target), message.id)
-    return {"forwarded": True, "message_id": message.id}
+    preview = ((getattr(message, "text", None) or getattr(message, "caption", None) or "") or "").strip()
+    if preview:
+        preview = preview[:120]
+    try:
+        await app.forward_messages("me", chat_ref, message.id)
+    except Exception as exc:
+        error_text = str(exc)
+        if "CHAT_FORWARDS_RESTRICTED" not in error_text:
+            raise
+        fallback_text = (
+            "Forward restricted source\n"
+            f"chat: {_chat_title(chat)}\n"
+            f"message_id: {message.id}\n\n"
+            f"{preview or '[media/no text]'}"
+        )
+        sent = await app.send_message("me", fallback_text)
+        return {
+            "forwarded": False,
+            "saved_fallback": True,
+            "saved_message_id": getattr(sent, "id", None),
+            "message_id": message.id,
+            "chat": _chat_title(chat),
+            "preview": preview,
+            "forward_error": error_text[:240],
+            "date": str(getattr(message, "date", "")) if getattr(message, "date", None) else "",
+        }
+    return {
+        "forwarded": True,
+        "message_id": message.id,
+        "chat": _chat_title(chat),
+        "preview": preview,
+        "date": str(getattr(message, "date", "")) if getattr(message, "date", None) else "",
+    }
 
 
 async def _saved_note_operation(app, note: str):
@@ -1118,52 +1664,143 @@ async def _saved_note_operation(app, note: str):
     return {"saved_message_id": getattr(sent, "id", None)}
 
 
-async def _passive_scan_operation(app, target: WarmupTarget, scan_type: str):
+async def _passive_scan_operation(app, target: WarmupTarget, scan_type: str, source: str = WarmupPolicy.WarmupSource.TARGETS):
     seen = 0
     matched = 0
-    async for message in app.get_chat_history(_target_ref(target), limit=10):
-        seen += 1
-        if scan_type == "poll" and getattr(message, "poll", None):
-            matched += 1
-        elif scan_type == "video" and getattr(message, "video", None):
-            matched += 1
-        elif scan_type == "voice" and getattr(message, "voice", None):
-            matched += 1
-        elif scan_type == "sticker" and getattr(message, "sticker", None):
-            matched += 1
-        elif scan_type == "link" and getattr(message, "web_page", None):
-            matched += 1
-    return {"scan_type": scan_type, "seen": seen, "matched": matched}
+    chats = []
+    matched_items = []
+    performed_items = []
+
+    def _message_matches(message) -> bool:
+        if scan_type == "poll":
+            return bool(getattr(message, "poll", None))
+        if scan_type == "video":
+            return bool(getattr(message, "video", None))
+        if scan_type == "voice":
+            return bool(getattr(message, "voice", None) or getattr(message, "audio", None))
+        if scan_type == "sticker":
+            return bool(getattr(message, "sticker", None))
+        if scan_type == "link":
+            return bool(getattr(message, "web_page", None))
+        return False
+
+    async def _perform_message_action(chat_ref, chat, message):
+        message_id = getattr(message, "id", None)
+        item = {
+            "chat": _chat_title(chat),
+            "message_id": message_id,
+            "media_type": scan_type,
+        }
+        if hasattr(app, "read_chat_history") and message_id:
+            await app.read_chat_history(chat_ref, max_id=message_id)
+            item["action"] = "read_chat_history"
+        else:
+            item["action"] = "matched_only"
+        performed_items.append(item)
+
+    for chat in await _warmup_chats(app, target, source, folder_limit=PASSIVE_SCAN_CHAT_LIMIT, subscription_limit=PASSIVE_SCAN_CHAT_LIMIT):
+        chat_ref = _chat_history_ref(chat)
+        if chat_ref is None:
+            continue
+        chat_seen = 0
+        chat_matched = 0
+        async for message in app.get_chat_history(chat_ref, limit=PASSIVE_SCAN_HISTORY_LIMIT):
+            seen += 1
+            chat_seen += 1
+            if _message_matches(message):
+                matched += 1
+                chat_matched += 1
+                if len(matched_items) < 20:
+                    matched_items.append({"chat": _chat_title(chat), "message_id": getattr(message, "id", None), "media_type": scan_type})
+                if len(performed_items) < PASSIVE_SCAN_PERFORM_LIMIT:
+                    await _perform_message_action(chat_ref, chat, message)
+        chats.append({"title": _chat_title(chat), "seen": chat_seen, "matched": chat_matched})
+        if len(performed_items) >= PASSIVE_SCAN_PERFORM_LIMIT:
+            break
+    return {
+        "scan_type": scan_type,
+        "seen": seen,
+        "matched": matched,
+        "chat_limit": PASSIVE_SCAN_CHAT_LIMIT,
+        "history_limit": PASSIVE_SCAN_HISTORY_LIMIT,
+        "chats": chats,
+        "matched_items": matched_items,
+        "performed_items": performed_items,
+    }
 
 
 async def _inline_bot_operation(app, bot_username: str, query: str):
     results = await app.get_inline_bot_results(bot_username, query)
-    return {"bot": bot_username, "query": query, "results": len(getattr(results, "results", []) or [])}
+    items = list(getattr(results, "results", []) or [])
+    first = items[0] if items else None
+    return {
+        "bot": bot_username,
+        "query": query,
+        "results": len(items),
+        "first_result_id": getattr(first, "id", None) if first else None,
+        "first_result_type": str(getattr(first, "type", "") or "") if first else "",
+        "query_id": str(getattr(results, "query_id", "") or ""),
+    }
 
 
 async def _gif_search_operation(app, query: str):
     return await _inline_bot_operation(app, "gif", query)
 
 
-async def _typing_operation(app, target: WarmupTarget):
+async def _typing_operation(app, target: WarmupTarget, source: str = WarmupPolicy.WarmupSource.TARGETS):
     from pyrogram.enums import ChatAction
 
-    await app.send_chat_action(_target_ref(target), ChatAction.TYPING)
-    return {"typing": True}
+    chats = await _warmup_chats(app, target, source, folder_limit=1)
+    if not chats:
+        return {"typing": False, "reason": "no_dialogs"}
+    chat = chats[0]
+    await app.send_chat_action(_chat_history_ref(chat), ChatAction.TYPING)
+    return {"typing": True, "chat": _chat_title(chat)}
 
 
-async def _profile_view_operation(app, target: WarmupTarget):
-    chat = await app.get_chat(_target_ref(target))
-    return {"chat_id": getattr(chat, "id", None), "title": getattr(chat, "title", "") or getattr(chat, "username", "")}
+async def _profile_view_operation(app, target: WarmupTarget, source: str = WarmupPolicy.WarmupSource.TARGETS):
+    chats = await _warmup_chats(app, target, source, folder_limit=5)
+    if not chats:
+        return {"chat_id": None, "title": target.title}
+    chat = chats[0]
+    return {
+        "chat_id": getattr(chat, "id", None),
+        "title": getattr(chat, "title", "") or getattr(chat, "username", ""),
+        "chats": [_chat_title(item) for item in chats],
+    }
 
 
-async def _story_view_operation(app, target: WarmupTarget):
-    chat = await app.get_chat(_target_ref(target))
+async def _story_view_operation(app, target: WarmupTarget, source: str = WarmupPolicy.WarmupSource.TARGETS):
+    story_items = []
+    checked = 0
+    async for dialog in app.get_dialogs(limit=100):
+        chat = getattr(dialog, "chat", None)
+        if chat is None:
+            continue
+        checked += 1
+        has_stories = bool(getattr(chat, "has_stories", False) or getattr(chat, "has_unread_stories", False))
+        stories_max_id = getattr(chat, "stories_max_id", None) or getattr(chat, "max_story_id", None)
+        if has_stories or stories_max_id:
+            story_items.append(
+                {
+                    "chat_id": getattr(chat, "id", None),
+                    "title": _chat_title(chat),
+                    "max_id": stories_max_id,
+                }
+            )
+    if story_items:
+        random.shuffle(story_items)
+        owner = story_items[0]["title"]
+    else:
+        owner = "доступних сторіс не знайдено"
     return {
         "checked": True,
-        "chat_id": getattr(chat, "id", None),
-        "title": _chat_title(chat),
-        "stories": 0,
+        "checked_dialogs": checked,
+        "chat_id": story_items[0].get("chat_id") if story_items else None,
+        "title": owner,
+        "story_owner": owner,
+        "stories": len(story_items),
+        "story_items": story_items[:10],
     }
 
 
@@ -1172,21 +1809,31 @@ async def _settings_check_operation(app):
     return {"user_id": getattr(me, "id", None), "username": getattr(me, "username", "") or ""}
 
 
-async def _trust_boost_operation(app, target: WarmupTarget):
+async def _trust_boost_operation(app, target: WarmupTarget, source: str = WarmupPolicy.WarmupSource.TARGETS):
     dialogs = await _dialog_snapshots(app, limit=5)
-    chat = await app.get_chat(_target_ref(target))
+    chats = await _warmup_chats(app, target, source, folder_limit=1)
+    chat = chats[0] if chats else None
+    profile_checked = _chat_title(chat) if chat else target.title
     return {
         "checked": True,
-        "target": _chat_title(chat),
+        "target": _chat_title(chat) if chat else target.title,
+        "profile_checked": profile_checked,
         "dialogs": len(dialogs),
+        "dialog_titles": [dialog.get("title") for dialog in dialogs if dialog.get("title")][:8],
         "signals": ["перегляд діалогів", "перевірка профілю", "читання без дій"],
     }
 
 
 async def _scheduled_message_check_operation(app):
     scheduled_at = timezone.now() + timedelta(hours=24)
-    sent = await app.send_message("me", "warmup scheduled check", schedule_date=scheduled_at)
-    return {"scheduled_message_id": getattr(sent, "id", None), "scheduled_for": scheduled_at.isoformat()}
+    text = "Нагадування"
+    sent = await app.send_message("me", text, schedule_date=scheduled_at)
+    return {
+        "scheduled_message_id": getattr(sent, "id", None),
+        "scheduled_for": scheduled_at.isoformat(),
+        "chat": "Збережене",
+        "text": text,
+    }
 
 
 async def _safe_metadata_operation(_app, action: WarmupAction):
@@ -1194,44 +1841,51 @@ async def _safe_metadata_operation(_app, action: WarmupAction):
 
 
 def _operation_for_action(action: WarmupAction):
+    source = _action_warmup_source(action)
+    def _query_or_error() -> str:
+        query = str(action.metadata.get("query") or "").strip()
+        if not query:
+            raise RuntimeError("Search query порожній: дію не можна виконати без конкретного запиту.")
+        return query
+
     if action.action_type in {WarmupAction.ActionType.JOIN_CHANNEL, WarmupAction.ActionType.JOIN_FOLDER}:
         return lambda app: _join_operation(app, action.target)
     if action.action_type == WarmupAction.ActionType.READ:
-        return lambda app: _read_operation(app, action.target)
+        return lambda app: _read_operation(app, action.target, source)
     if action.action_type == WarmupAction.ActionType.VIEW_DIALOGS:
         return lambda app: _view_dialogs_operation(app)
     if action.action_type == WarmupAction.ActionType.ACCOUNT_DIALOG:
-        return lambda app: _account_dialog_operation(app)
+        return lambda app: _account_dialog_operation(app, action)
     if action.action_type == WarmupAction.ActionType.CHANNEL_SCROLL:
-        return lambda app: _channel_scroll_operation(app, action.target)
+        return lambda app: _channel_scroll_operation(app, action.target, source)
     if action.action_type == WarmupAction.ActionType.MARK_READ:
-        return lambda app: _mark_read_operation(app, action.target)
+        return lambda app: _mark_read_operation(app, action.target, source)
     if action.action_type == WarmupAction.ActionType.MESSAGE_SEARCH:
-        return lambda app: _message_search_operation(app, action.target, action.metadata.get("query") or "crypto")
+        return lambda app: _message_search_operation(app, action.target, _query_or_error(), source)
     if action.action_type == WarmupAction.ActionType.REACTION:
-        return lambda app: _reaction_operation(app, action.target, action.metadata.get("reaction") or "👍")
+        return lambda app: _reaction_operation(app, action.target, action.metadata.get("reaction") or "👍", source)
     if action.action_type == WarmupAction.ActionType.FORWARD_MESSAGE:
-        return lambda app: _forward_message_operation(app, action.target)
+        return lambda app: _forward_message_operation(app, action.target, source)
     if action.action_type == WarmupAction.ActionType.SAVED_NOTE:
-        return lambda app: _saved_note_operation(app, action.metadata.get("note") or "warmup note")
+        return lambda app: _saved_note_operation(app, action.metadata.get("note") or "Нотатка")
     if action.action_type in PASSIVE_SCAN_ACTIONS:
-        return lambda app: _passive_scan_operation(app, action.target, PASSIVE_SCAN_ACTIONS[action.action_type])
+        return lambda app: _passive_scan_operation(app, action.target, PASSIVE_SCAN_ACTIONS[action.action_type], source)
     if action.action_type == WarmupAction.ActionType.INLINE_BOT_CHECK:
         return lambda app: _inline_bot_operation(
             app,
             action.metadata.get("bot") or "gif",
-            action.metadata.get("query") or "cat",
+            _query_or_error(),
         )
     if action.action_type == WarmupAction.ActionType.GIF_SEARCH:
-        return lambda app: _gif_search_operation(app, action.metadata.get("query") or "cat")
+        return lambda app: _gif_search_operation(app, _query_or_error())
     if action.action_type == WarmupAction.ActionType.TYPING_SIMULATION:
-        return lambda app: _typing_operation(app, action.target)
+        return lambda app: _typing_operation(app, action.target, source)
     if action.action_type == WarmupAction.ActionType.PROFILE_VIEW:
-        return lambda app: _profile_view_operation(app, action.target)
+        return lambda app: _profile_view_operation(app, action.target, source)
     if action.action_type == WarmupAction.ActionType.STORY_VIEW:
-        return lambda app: _story_view_operation(app, action.target)
+        return lambda app: _story_view_operation(app, action.target, source)
     if action.action_type == WarmupAction.ActionType.TRUST_BOOST:
-        return lambda app: _trust_boost_operation(app, action.target)
+        return lambda app: _trust_boost_operation(app, action.target, source)
     if action.action_type in {
         WarmupAction.ActionType.SETTINGS_CHECK,
         WarmupAction.ActionType.GRADUAL_PROFILE_CHECK,
@@ -1246,12 +1900,13 @@ def _claim_warmup_action(action_id: int) -> WarmupAction | None:
     with transaction.atomic():
         action = (
             WarmupAction.objects.select_for_update()
-            .select_related("account", "target", "plan")
+            .select_related("account", "target", "plan", "plan__policy")
             .get(pk=action_id)
         )
         if action.status != WarmupAction.Status.QUEUED:
             return None
-        if action.scheduled_for > timezone.now():
+        # Allow tiny clock/queue jitter so task won't bounce as "queued" and wait for next beat tick.
+        if action.scheduled_for > timezone.now() + timedelta(seconds=1):
             return None
 
         action.status = WarmupAction.Status.RUNNING
@@ -1279,19 +1934,10 @@ def _finish_warmup_action(action: WarmupAction, *, status: str, error: str = "",
 def execute_warmup_action(action_id: int) -> WarmupAction:
     claimed = _claim_warmup_action(action_id)
     if claimed is None:
-        return WarmupAction.objects.select_related("account", "target", "plan").get(pk=action_id)
+        return WarmupAction.objects.select_related("account", "target", "plan", "plan__policy").get(pk=action_id)
 
-    action = WarmupAction.objects.select_related("account", "target", "plan").get(pk=claimed.pk)
+    action = WarmupAction.objects.select_related("account", "target", "plan", "plan__policy").get(pk=claimed.pk)
     account = action.account
-    log_warmup_event(
-        owner=action.owner,
-        level=WarmupLog.Level.INFO,
-        plan=action.plan,
-        action=action,
-        account=account,
-        message=_started_message(action),
-        metadata={**_action_context(action), "target": action.target.value, "attempt": action.attempt},
-    )
     block_reason = get_account_runtime_block_reason(account)
     if block_reason:
         action = _finish_warmup_action(action, status=WarmupAction.Status.SKIPPED, error=block_reason)
@@ -1317,7 +1963,8 @@ def execute_warmup_action(action_id: int) -> WarmupAction:
             event_type=AccountHealthEvent.EventType.SUCCESS,
             metadata={"source": "warmup", "action_id": action.id, "action_type": action.action_type},
         )
-        schedule_next_cycle_action(action)
+        if not action.metadata.get("initial_cycle"):
+            schedule_next_cycle_action(action)
         refresh_plan_status(action.plan)
         log_warmup_event(
             owner=action.owner,
@@ -1332,6 +1979,13 @@ def execute_warmup_action(action_id: int) -> WarmupAction:
         classified = classify_runtime_exception(exc)
         if classified is not None:
             event_type, metadata = classified
+            metadata = {
+                **metadata,
+                "source": "warmup",
+                "action_id": action.id,
+                "action_type": action.action_type,
+                "plan_id": action.plan_id,
+            }
             register_account_runtime_event(account, event_type=event_type, metadata=metadata)
         action = _finish_warmup_action(action, status=WarmupAction.Status.FAILED, error=str(exc))
         schedule_next_cycle_action(action, after_error=True)

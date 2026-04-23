@@ -8,9 +8,43 @@ from rest_framework import serializers
 
 from apps.input_validation import validate_json_object_size, validate_pyrogram_session_file
 from apps.telegram_accounts.models import AccountHealthEvent, AccountRoleTemplate, Proxy, TelegramAccount
+from apps.telegram_accounts.services import account_liveness_score, account_risk_level
 
 
 PHONE_RE = re.compile(r"^\+?[1-9]\d{7,14}$")
+
+WARMUP_ACTION_STATUS_LABELS = {
+    "join_channel": "Вступ у канал",
+    "join_folder": "Вступ через папку",
+    "view_dialogs": "Перегляд діалогів",
+    "channel_scroll": "Прокрутка каналу",
+    "read": "Читання постів",
+    "account_dialog": "Діалог між акаунтами",
+    "story_view": "Перегляд сторіс",
+    "trust_boost": "Підвищення довіри",
+    "mark_read": "Позначення прочитаним",
+    "message_search": "Пошук повідомлень",
+    "reaction": "Реакція на пост",
+    "forward_message": "Пересилка",
+    "saved_note": "Нотатка",
+    "poll_scan": "Пошук опитувань",
+    "video_scan": "Перегляд відео",
+    "voice_scan": "Прослуховування voice",
+    "gif_search": "Пошук GIF",
+    "sticker_scan": "Перегляд стікерів",
+    "inline_bot_check": "Inline-бот",
+    "link_preview": "Preview посилань",
+    "typing_simulation": "Симуляція набору",
+    "profile_view": "Перегляд профілю",
+    "settings_check": "Налаштування",
+    "gradual_profile_check": "Перевірка профілю",
+    "emoji_status_check": "Emoji-status",
+    "drafts_check": "Чернетки",
+    "notification_check": "Сповіщення",
+    "scheduled_message_check": "Відкладене повідомлення",
+    "archive_check": "Архів",
+    "mute_check": "Mute",
+}
 
 
 def normalize_label(value: str) -> str:
@@ -32,6 +66,15 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
     avatar_url = serializers.SerializerMethodField()
     role_template = serializers.PrimaryKeyRelatedField(queryset=AccountRoleTemplate.objects.none(), required=False, allow_null=True)
     role_template_detail = serializers.SerializerMethodField()
+    is_quarantined = serializers.BooleanField(read_only=True)
+    liveness_score = serializers.SerializerMethodField()
+    risk_level = serializers.SerializerMethodField()
+    operational_role = serializers.SerializerMethodField()
+    operational_role_label = serializers.SerializerMethodField()
+    warmup_age_days = serializers.SerializerMethodField()
+    current_warmup_action_type = serializers.SerializerMethodField()
+    current_warmup_action_status = serializers.SerializerMethodField()
+    current_warmup_action_label = serializers.SerializerMethodField()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -66,10 +109,18 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             "role",
             "role_template",
             "role_template_detail",
+            "operational_role",
+            "operational_role_label",
+            "current_warmup_action_type",
+            "current_warmup_action_status",
+            "current_warmup_action_label",
             "birth_date",
             "avatar_url",
             "health_score",
+            "liveness_score",
+            "risk_level",
             "quarantine_until",
+            "is_quarantined",
             "last_success_at",
             "last_error_at",
             "sleep_min_seconds",
@@ -77,6 +128,7 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             "device_model",
             "system_version",
             "randomize_device_profile",
+            "warmup_age_days",
             "created_at",
         )
         read_only_fields = (
@@ -97,8 +149,17 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
             "avatar_url",
+            "operational_role",
+            "operational_role_label",
+            "current_warmup_action_type",
+            "current_warmup_action_status",
+            "current_warmup_action_label",
             "health_score",
+            "liveness_score",
+            "risk_level",
             "quarantine_until",
+            "is_quarantined",
+            "warmup_age_days",
             "created_at",
         )
 
@@ -159,6 +220,68 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             "name": obj.role_template.name,
             "prompt": obj.role_template.prompt,
         }
+
+    def get_liveness_score(self, obj):
+        return account_liveness_score(obj)
+
+    def get_risk_level(self, obj):
+        return account_risk_level(obj)
+
+    def get_operational_role(self, obj):
+        if self._has_running_parsing(obj):
+            return "parsing"
+        if self._has_running_warmup(obj):
+            return "warmup"
+        return "reserve"
+
+    def get_operational_role_label(self, obj):
+        if self._has_running_parsing(obj):
+            return "Парсинг"
+        if self._has_running_warmup(obj):
+            return "Прогрів"
+        return "Резерв"
+
+    def get_warmup_age_days(self, obj):
+        if not obj.created_at:
+            return 0
+        return max(0, (timezone.localdate() - timezone.localdate(obj.created_at)).days)
+
+    def get_current_warmup_action_type(self, obj):
+        action = self._current_warmup_action(obj)
+        return action.action_type if action else ""
+
+    def get_current_warmup_action_status(self, obj):
+        action = self._current_warmup_action(obj)
+        return action.status if action else ""
+
+    def get_current_warmup_action_label(self, obj):
+        action = self._current_warmup_action(obj)
+        if not action:
+            return ""
+        return WARMUP_ACTION_STATUS_LABELS.get(action.action_type, action.get_action_type_display())
+
+    def _has_running_warmup(self, obj):
+        cached = getattr(obj, "_has_running_warmup", None)
+        if cached is not None:
+            return cached
+        return obj.warmup_plans.filter(status="running").exists()
+
+    def _has_running_parsing(self, obj):
+        return bool(getattr(obj, "_has_running_parsing", False))
+
+    def _current_warmup_action(self, obj):
+        cached = getattr(obj, "_current_warmup_action_cache", None)
+        if cached is not None:
+            return cached or None
+
+        from apps.warmup.models import WarmupAction
+
+        base_qs = obj.warmup_actions.filter(plan__status="running")
+        action = base_qs.filter(status=WarmupAction.Status.RUNNING).order_by("started_at", "scheduled_for", "id").first()
+        if action is None:
+            action = base_qs.filter(status=WarmupAction.Status.QUEUED).order_by("scheduled_for", "id").first()
+        obj._current_warmup_action_cache = action or False
+        return action
 
     def update(self, instance, validated_data):
         template = validated_data.get("role_template", serializers.empty)
@@ -391,6 +514,8 @@ class TelegramAccountHealthSerializer(serializers.ModelSerializer):
     recent_events = serializers.SerializerMethodField()
     is_quarantined = serializers.BooleanField(read_only=True)
     recommended_pause_range = serializers.SerializerMethodField()
+    liveness_score = serializers.SerializerMethodField()
+    risk_level = serializers.SerializerMethodField()
 
     class Meta:
         model = TelegramAccount
@@ -399,6 +524,8 @@ class TelegramAccountHealthSerializer(serializers.ModelSerializer):
             "label",
             "status",
             "health_score",
+            "liveness_score",
+            "risk_level",
             "quarantine_until",
             "is_quarantined",
             "last_success_at",
@@ -419,3 +546,9 @@ class TelegramAccountHealthSerializer(serializers.ModelSerializer):
 
     def get_recommended_pause_range(self, obj):
         return {"min_seconds": obj.sleep_min_seconds, "max_seconds": obj.sleep_max_seconds}
+
+    def get_liveness_score(self, obj):
+        return account_liveness_score(obj)
+
+    def get_risk_level(self, obj):
+        return account_risk_level(obj)

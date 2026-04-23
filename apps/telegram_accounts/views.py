@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from django.db.models import Count, Q
+from django.db.models import Count, Exists, OuterRef, Q
 from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -50,6 +50,7 @@ from apps.telegram_accounts.services import (
     telegram_runtime_workdir,
 )
 from apps.telegram_accounts.tasks import ping_proxy_task, register_account_runtime_event_task
+from apps.warmup.models import WarmupPlan
 
 
 class OwnerQuerysetMixin:
@@ -85,6 +86,13 @@ class TelegramAccountViewSet(OwnerQuerysetMixin, viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = TelegramAccountSerializer
     queryset = TelegramAccount.objects.select_related("proxy", "role_template").prefetch_related("health_events", "profile_drafts")
+
+    def get_queryset(self):
+        running_warmup = WarmupPlan.objects.filter(
+            accounts=OuterRef("pk"),
+            status=WarmupPlan.Status.RUNNING,
+        )
+        return super().get_queryset().annotate(_has_running_warmup=Exists(running_warmup))
 
     def get_parsers(self):
         if getattr(self, "action", None) == "add":

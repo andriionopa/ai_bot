@@ -63,6 +63,59 @@ function compactDate(value) {
   }
 }
 
+function accountRiskLabel(value) {
+  if (value === "high") return "Високий ризик";
+  if (value === "medium") return "Середній ризик";
+  return "Низький ризик";
+}
+
+function accountRiskTone(value) {
+  if (value === "high") return "red";
+  if (value === "medium") return "amber";
+  return "green";
+}
+
+function quarantineLabel(account) {
+  if (!account.is_quarantined || !account.quarantine_until) return "";
+  return `Карантин до ${compactDate(account.quarantine_until)}`;
+}
+
+function operationalRoleLabel(account) {
+  if (account.operational_role_label) return account.operational_role_label;
+  if (account.operational_role === "warmup") return "Прогрів";
+  if (account.operational_role === "parsing") return "Парсинг";
+  return "Резерв";
+}
+
+function operationalRoleTone(account) {
+  if (account.operational_role === "warmup") return "amber";
+  if (account.operational_role === "parsing") return "blue";
+  return "green";
+}
+
+function warmupAgeLabel(account) {
+  const days = Number.isFinite(Number(account.warmup_age_days)) ? Number(account.warmup_age_days) : 0;
+  return `Прогрів ${days}д`;
+}
+
+function accountStatusLabel(account) {
+  if (account.is_quarantined) return quarantineLabel(account);
+  if (account.operational_role === "warmup") {
+    return account.current_warmup_action_label || "Прогрів";
+  }
+  return statusLabels[account.auth_state] || account.auth_state;
+}
+
+function accountStatusTone(account) {
+  if (account.is_quarantined) return "amber";
+  if (account.operational_role === "warmup") {
+    return account.current_warmup_action_status === "running" ? "blue" : "amber";
+  }
+  if (account.auth_state === "connected") return "green";
+  if (account.auth_state === "failed") return "red";
+  return "amber";
+}
+
 function StatCard({ icon, label, value, tone }) {
   return (
     <div className={`stat-card ${tone || ""}`}>
@@ -867,8 +920,11 @@ function AccountDetailsModal({ account, proxies, initialTab = "profile", onClose
         </div>
         <div className="account-badges">
           <span className="badge green">{statusLabels[account.auth_state] || account.auth_state}</span>
-          <span className="badge blue">health {account.health_score}</span>
-          <span className="badge amber">{account.status}</span>
+          <span className="badge blue">Здоров'я {account.health_score}/100</span>
+          <span className={`badge ${accountRiskTone(account.risk_level)}`}>Живучість {account.liveness_score ?? account.health_score}/100 · {accountRiskLabel(account.risk_level)}</span>
+          <span className={`badge ${account.is_quarantined ? "amber" : "green"}`}>
+            {account.is_quarantined ? quarantineLabel(account) : account.status}
+          </span>
         </div>
       </div>
 
@@ -953,6 +1009,8 @@ function AccountDetailsModal({ account, proxies, initialTab = "profile", onClose
           <div><span>Auth</span><b>{statusLabels[account.auth_state] || account.auth_state}</b></div>
           <div><span>Статус</span><b>{account.status}</b></div>
           <div><span>Health</span><b>{account.health_score}/100</b></div>
+          <div><span>Живучість</span><b>{account.liveness_score ?? account.health_score}/100</b></div>
+          <div><span>Ризик</span><b>{accountRiskLabel(account.risk_level)}</b></div>
           <div><span>Підключений</span><b>{account.is_attached ? "так" : "ні"}</b></div>
           <div><span>Дата народження</span><b>{profile.birth_date || account.birth_date || "не задано"}</b></div>
           <div><span>Роль</span><b>{account.role || "без ролі"}</b></div>
@@ -984,6 +1042,8 @@ function AccountDetailsModal({ account, proxies, initialTab = "profile", onClose
           </button>
           <div className="details-grid">
             <div><span>Score</span><b>{health?.health_score ?? account.health_score}</b></div>
+            <div><span>Живучість</span><b>{health?.liveness_score ?? account.liveness_score ?? account.health_score}/100</b></div>
+            <div><span>Ризик</span><b>{accountRiskLabel(health?.risk_level ?? account.risk_level)}</b></div>
             <div><span>Карантин</span><b>{health?.quarantine_until || account.quarantine_until || "немає"}</b></div>
             <div><span>Останній успіх</span><b>{health?.last_success_at || account.last_success_at || "немає"}</b></div>
             <div><span>Остання помилка</span><b>{health?.last_error_at || account.last_error_at || "немає"}</b></div>
@@ -1478,7 +1538,8 @@ export default function AccountManagerPage() {
                 <small>@{account.telegram_username || account.phone_number || account.label}</small>
               </span>
               <span>
-                <button className="mini-button" onClick={() => {
+                <b className={`badge ${operationalRoleTone(account)}`}>{operationalRoleLabel(account)}</b>
+                <button className="mini-button subtle" onClick={() => {
                   if (!roleTemplates.length) {
                     setModal("roles");
                     return;
@@ -1487,11 +1548,17 @@ export default function AccountManagerPage() {
                   const picked = window.prompt(`ID ролі для акаунта:\n${options}`, account.role_template || roleTemplates[0].id);
                   if (picked !== null) patchAccounts([account.id], { role_template: Number(picked) || null }, "Роль акаунта оновлено.");
                 }}>
-                  {account.role || "＋ Add"}
+                  AI: {account.role || "＋ Add"}
                 </button>
               </span>
-              <span><b className={`badge ${account.auth_state === "connected" ? "green" : account.auth_state === "failed" ? "red" : "amber"}`}>{statusLabels[account.auth_state] || account.auth_state}</b></span>
-              <span><b className="badge amber">{account.status === "active" ? "Warmed" : "Warming"} {account.health_score}d</b></span>
+              <span>
+                <b className={`badge ${accountStatusTone(account)}`}>
+                  {accountStatusLabel(account)}
+                </b>
+              </span>
+              <span>
+                <b className="badge amber">{warmupAgeLabel(account)}</b>
+              </span>
               <span><b className={`badge ${account.proxy ? "green" : "gray"}`}>{proxyLabel(overview.proxies, account.proxy)}</b></span>
               <span className="row-actions">
                 <button

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import shutil
 import socket
 import sqlite3
@@ -13,6 +14,7 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
+import redis
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
@@ -83,6 +85,12 @@ EVENT_SCORE_DELTAS = {
 
 DEFAULT_DEVICE_MODEL = "StogramGPT"
 DEFAULT_SYSTEM_VERSION = "Web Automation"
+DEVICE_PROFILE_POOL = (
+    ("StogramGPT Desktop", "Web Automation"),
+    ("StogramGPT Mobile", "Android 14"),
+    ("StogramGPT Web", "Chrome 124"),
+    ("StogramGPT iOS", "iOS 17"),
+)
 RISKY_DEVICE_MODELS = {
     "telegram desktop",
     "iphone 13 pro",
@@ -106,6 +114,10 @@ def resolve_device_profile(
 ) -> tuple[str, str]:
     device_model = (device_model or "").strip()
     system_version = (system_version or "").strip()
+    if randomize_device_profile and (not device_model or not system_version):
+        picked_device, picked_system = random.choice(DEVICE_PROFILE_POOL)
+        device_model = device_model or picked_device
+        system_version = system_version or picked_system
     if not device_model or device_model.lower() in RISKY_DEVICE_MODELS:
         device_model = DEFAULT_DEVICE_MODEL
     if not system_version:
@@ -205,7 +217,7 @@ def build_account_client(account: TelegramAccount) -> Client:
     device_model, system_version = resolve_device_profile(
         device_model=account.device_model,
         system_version=account.system_version,
-        randomize_device_profile=False,
+        randomize_device_profile=account.randomize_device_profile,
     )
     return Client(
         name=account.session_name,
@@ -219,6 +231,29 @@ def build_account_client(account: TelegramAccount) -> Client:
         lang_code="en",
         no_updates=True,
     )
+
+
+@contextmanager
+def account_session_lock(account: TelegramAccount, *, timeout: int = 600, blocking_timeout: int = 180):
+    client = redis.from_url(settings.CELERY_BROKER_URL)
+    lock = client.lock(
+        f"telegram-account-session:{account.session_name}",
+        timeout=timeout,
+        blocking_timeout=blocking_timeout,
+    )
+    acquired = lock.acquire(blocking=True)
+    if not acquired:
+        raise RuntimeError(
+            f"Telegram session is busy for account {account.label}; "
+            "previous operation did not release the session lock in time."
+        )
+    try:
+        yield
+    finally:
+        try:
+            lock.release()
+        except redis.exceptions.LockError:
+            pass
 
 
 @contextmanager
@@ -240,11 +275,15 @@ def ensure_thread_event_loop():
 
 
 def run_client_operation(account: TelegramAccount, operation):
-    with ensure_thread_event_loop():
+    with account_session_lock(account), ensure_thread_event_loop():
         loop = asyncio.get_event_loop()
         app = build_account_client(account)
         loop.run_until_complete(Connect.connect(app))
         try:
+            pause_min = max(0, int(account.sleep_min_seconds or 0))
+            pause_max = max(pause_min, int(account.sleep_max_seconds or pause_min))
+            if pause_max:
+                loop.run_until_complete(asyncio.sleep(random.randint(pause_min, pause_max)))
             return loop.run_until_complete(operation(app))
         finally:
             if app.is_connected:
@@ -605,6 +644,48 @@ def calculate_account_health_score(account: TelegramAccount) -> int:
     return max(0, min(100, score))
 
 
+def account_liveness_score(account: TelegramAccount) -> int:
+    score = account.health_score
+    if account.is_quarantined:
+        score -= 35
+    elif account.status != TelegramAccount.Status.ACTIVE:
+        score -= 15
+    if account.last_error_at and account.last_error_at > timezone.now() - timedelta(hours=1):
+        score -= 10
+    if account.last_success_at and account.last_success_at > timezone.now() - timedelta(hours=6):
+        score += 5
+    return max(0, min(100, score))
+
+
+def account_risk_level(account: TelegramAccount) -> str:
+    liveness = account_liveness_score(account)
+    if account.is_quarantined or liveness < 45:
+        return "high"
+    if liveness < 70 or account.health_score < 75:
+        return "medium"
+    return "low"
+
+
+def _stop_account_warmup_actions_for_quarantine(account: TelegramAccount, *, reason: str, metadata: dict[str, object]) -> int:
+    from apps.warmup.models import WarmupAction
+
+    current_action_id = metadata.get("action_id")
+    queryset = WarmupAction.objects.filter(
+        account=account,
+        status__in=[WarmupAction.Status.QUEUED, WarmupAction.Status.RUNNING],
+        plan__status__in=["running"],
+    )
+    if current_action_id:
+        queryset = queryset.exclude(pk=current_action_id)
+    stopped = queryset.update(
+        status=WarmupAction.Status.SKIPPED,
+        error=reason,
+        finished_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
+    return stopped
+
+
 @transaction.atomic
 def attach_account_via_session(
     *,
@@ -960,6 +1041,16 @@ def register_account_runtime_event(
     account.health_score = calculate_account_health_score(account)
     save_fields = ["health_score", *updates.keys()]
     account.save(update_fields=save_fields)
+    if event_type in {AccountHealthEvent.EventType.FLOOD_WAIT, AccountHealthEvent.EventType.SPAM_BLOCK}:
+        seconds = metadata.get("seconds")
+        reason = (
+            f"Account quarantined for 24h until {account.quarantine_until.isoformat()} "
+            f"({event.get_event_type_display()}{f' {seconds} с' if seconds else ''})"
+        )
+        stopped_actions = _stop_account_warmup_actions_for_quarantine(account, reason=reason, metadata=metadata)
+        metadata["stopped_warmup_actions"] = stopped_actions
+        event.metadata = metadata
+        event.save(update_fields=["metadata"])
     return event
 
 

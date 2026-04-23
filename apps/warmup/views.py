@@ -22,6 +22,7 @@ from apps.warmup.services import (
     plan_queryset_with_counts,
     run_due_warmup_actions,
     start_warmup_plan,
+    stop_warmup_plan,
 )
 
 
@@ -100,6 +101,11 @@ class WarmupPlanViewSet(OwnerQuerysetMixin, viewsets.ModelViewSet):
         plan = pause_warmup_plan(self.get_object())
         plan = plan_queryset_with_counts(WarmupPlan.objects.filter(pk=plan.pk)).get()
         return Response(WarmupPlanSerializer(plan, context={"request": request}).data)
+
+    @action(detail=True, methods=["post"])
+    def stop(self, request, pk=None):
+        payload = stop_warmup_plan(self.get_object(), purge_redis=bool(request.data.get("purge_redis", True)))
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class WarmupActionViewSet(OwnerQuerysetMixin, viewsets.ReadOnlyModelViewSet):

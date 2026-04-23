@@ -13,6 +13,10 @@ class WarmupPolicy(models.Model):
         BALANCED = "balanced", "Balanced"
         AGGRESSIVE = "aggressive", "Aggressive"
 
+    class WarmupSource(models.TextChoices):
+        SUBSCRIPTIONS = "subscriptions", "Subscriptions"
+        TARGETS = "targets", "Targets"
+
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="warmup_policies")
     name = models.CharField(max_length=255)
     behavior_profile = models.CharField(
@@ -42,6 +46,7 @@ class WarmupPolicy(models.Model):
     allow_folder_one_click = models.BooleanField(default=False)
     allow_public_gradual_join = models.BooleanField(default=True)
     allow_private_join = models.BooleanField(default=True)
+    warmup_source = models.CharField(max_length=16, choices=WarmupSource.choices, default=WarmupSource.SUBSCRIPTIONS)
     enable_reactions = models.BooleanField(default=True)
     enable_read_channels = models.BooleanField(default=True)
     enable_account_dialogs = models.BooleanField(default=False)

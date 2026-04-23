@@ -1,4 +1,5 @@
 from celery import shared_task
+from django.utils import timezone
 
 from apps.telegram_accounts.models import AccountHealthEvent, Proxy, TelegramAccount
 from apps.telegram_accounts.services import (
@@ -37,18 +38,44 @@ def register_account_runtime_event_task(
     event_type: str,
     metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    account = TelegramAccount.objects.get(pk=account_id)
+    account = TelegramAccount.objects.filter(pk=account_id).first()
+    if account is None:
+        publish_log_event(
+            {
+                "level": "warning",
+                "source": "account-health",
+                "message": f"Runtime event ignored: Telegram account #{account_id} no longer exists.",
+                "account_id": account_id,
+                "event_type": event_type,
+                "deleted_account": True,
+            }
+        )
+        return {"account_id": account_id, "event_type": event_type, "status": "deleted"}
     event = register_account_runtime_event(account, event_type=event_type, metadata=metadata)
+    quarantine_until = account.quarantine_until.isoformat() if account.quarantine_until else None
+    if event_type == AccountHealthEvent.EventType.FLOOD_WAIT:
+        seconds = (metadata or {}).get("seconds")
+        until = timezone.localtime(account.quarantine_until).strftime("%d.%m %H:%M") if account.quarantine_until else "-"
+        message = (
+            f"⚠️ {account.telegram_user_id or account.phone_number or account.label} "
+            f"Карантин на 24 часа до {until} (FloodWait {seconds or '-'} с)"
+        )
+    elif event_type == AccountHealthEvent.EventType.SPAM_BLOCK:
+        until = timezone.localtime(account.quarantine_until).strftime("%d.%m %H:%M") if account.quarantine_until else "-"
+        message = f"⚠️ {account.telegram_user_id or account.phone_number or account.label} Карантин на 24 часа до {until} (SpamBlock)"
+    else:
+        message = f"{account.label}: {event.get_event_type_display()}"
     publish_log_event(
         {
             "level": "warning" if event_type != AccountHealthEvent.EventType.SUCCESS else "info",
             "source": "account-health",
-            "message": f"{account.label}: {event.get_event_type_display()}",
+            "message": message,
             "account_id": account.id,
             "event_type": event_type,
             "health_score": account.health_score,
             "status": account.status,
-            "quarantine_until": account.quarantine_until.isoformat() if account.quarantine_until else None,
+            "quarantine_until": quarantine_until,
+            "stopped_warmup_actions": event.metadata.get("stopped_warmup_actions", 0),
         }
     )
     return {

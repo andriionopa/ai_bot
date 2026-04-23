@@ -85,6 +85,7 @@ class WarmupPolicySerializer(serializers.ModelSerializer):
             "allow_folder_one_click",
             "allow_public_gradual_join",
             "allow_private_join",
+            "warmup_source",
             "enable_reactions",
             "enable_read_channels",
             "enable_account_dialogs",

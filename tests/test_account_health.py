@@ -12,6 +12,7 @@ from apps.telegram_accounts.services import (
     recalculate_account_state,
     register_account_runtime_event,
 )
+from apps.warmup.models import WarmupAction, WarmupPlan, WarmupPolicy, WarmupTarget
 
 
 def auth_client(user):
@@ -60,6 +61,54 @@ def test_flood_wait_event_quarantines_account_and_updates_score():
     assert account.status == TelegramAccount.Status.QUARANTINE
     assert account.quarantine_until is not None
     assert account.health_score == 85
+
+
+@pytest.mark.django_db
+def test_flood_wait_event_stops_active_warmup_actions():
+    user = get_user_model().objects.create_user(email="quarantine-warmup@example.com")
+    account = TelegramAccount.objects.create(
+        owner=user,
+        label="Farm Warmup",
+        session_name="farm-warmup",
+        auth_state=TelegramAccount.AuthState.CONNECTED,
+        status=TelegramAccount.Status.ACTIVE,
+    )
+    policy = WarmupPolicy.objects.create(owner=user, name="Safe")
+    target = WarmupTarget.objects.create(owner=user, title="Target", value="@target")
+    plan = WarmupPlan.objects.create(owner=user, name="Plan", policy=policy, status=WarmupPlan.Status.RUNNING)
+    plan.accounts.add(account)
+    plan.targets.add(target)
+    current = WarmupAction.objects.create(
+        owner=user,
+        plan=plan,
+        account=account,
+        target=target,
+        action_type=WarmupAction.ActionType.READ,
+        status=WarmupAction.Status.RUNNING,
+        scheduled_for=timezone.now(),
+    )
+    queued = WarmupAction.objects.create(
+        owner=user,
+        plan=plan,
+        account=account,
+        target=target,
+        action_type=WarmupAction.ActionType.VIDEO_SCAN,
+        status=WarmupAction.Status.QUEUED,
+        scheduled_for=timezone.now() + timedelta(minutes=5),
+    )
+
+    event = register_account_runtime_event(
+        account,
+        AccountHealthEvent.EventType.FLOOD_WAIT,
+        metadata={"seconds": 60, "action_id": current.id},
+    )
+    queued.refresh_from_db()
+    current.refresh_from_db()
+
+    assert queued.status == WarmupAction.Status.SKIPPED
+    assert "Flood Wait" in queued.error
+    assert current.status == WarmupAction.Status.RUNNING
+    assert event.metadata["stopped_warmup_actions"] == 1
 
 
 @pytest.mark.django_db

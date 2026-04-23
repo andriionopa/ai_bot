@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { apiFetch, normalizeApiError } from "@/lib/api";
 
@@ -29,6 +29,7 @@ const defaultPolicy = {
   allow_folder_one_click: true,
   allow_public_gradual_join: true,
   allow_private_join: true,
+  warmup_source: "subscriptions",
   enable_reactions: true,
   enable_read_channels: true,
   enable_account_dialogs: false,
@@ -58,7 +59,7 @@ const defaultPolicy = {
   enable_scheduled_message_check: true,
   enable_archive_check: true,
   enable_mute_check: true,
-  search_query: "crypto drops news",
+  search_query: "",
   inline_bot_username: "gif",
   is_active: true,
 };
@@ -100,8 +101,10 @@ export default function WarmupPage() {
   const [timezone, setTimezone] = useState("Europe/Kyiv");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [now, setNow] = useState(() => Date.now());
+  const policyDirtyRef = useRef(false);
 
-  async function load() {
+  async function load({ forcePolicySync = false } = {}) {
     setError("");
     try {
       await apiFetch("/api/v1/auth/me/");
@@ -111,7 +114,9 @@ export default function WarmupPage() {
       ]);
       setOverview(warmup);
       setAccountsOverview(accounts);
-      if (warmup.policies?.[0]) setPolicy({ ...defaultPolicy, ...warmup.policies[0] });
+      if (warmup.policies?.[0] && (forcePolicySync || !policyDirtyRef.current)) {
+        setPolicy({ ...defaultPolicy, ...warmup.policies[0] });
+      }
     } catch (exc) {
       if (exc instanceof Error && exc.message === "AUTH_REQUIRED") {
         window.location.replace("/auth");
@@ -127,14 +132,48 @@ export default function WarmupPage() {
     return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const connectedAccounts = useMemo(
     () => accountsOverview.accounts.filter((account) => account.is_attached && account.auth_state === "connected"),
     [accountsOverview.accounts],
   );
 
   const [levelName, levelDescription] = levelForPolicy(policy);
+  const policiesById = useMemo(() => new Map((overview.policies || []).map((item) => [item.id, item])), [overview.policies]);
+  const visibleLogs = useMemo(
+    () =>
+      (overview.logs || []).filter((log) => {
+        const messageText = log.message || "";
+        return !(
+          messageText.includes("Заплановано") ||
+          messageText.includes("Виконується") ||
+          messageText.includes("План «")
+        );
+      }),
+    [overview.logs],
+  );
+
+  function planProgress(plan) {
+    const planPolicy = policiesById.get(plan.policy) || policy;
+    const durationMs = Math.max(1, Number(planPolicy.session_duration_minutes || session || 30)) * 60 * 1000;
+    const startedMs = plan.started_at ? new Date(plan.started_at).getTime() : now;
+    const elapsedMs = Math.max(0, now - startedMs);
+    const percent = Math.min(100, Math.floor((elapsedMs / durationMs) * 100));
+    const remainingMs = Math.max(0, durationMs - elapsedMs);
+    const remainingMinutes = Math.floor(remainingMs / 60000);
+    const remainingSeconds = Math.floor((remainingMs % 60000) / 1000);
+    return {
+      percent,
+      remaining: `${remainingMinutes}м ${String(remainingSeconds).padStart(2, "0")}с`,
+    };
+  }
 
   function updatePolicyField(field, value) {
+    policyDirtyRef.current = true;
     setPolicy((prev) => ({ ...prev, [field]: value }));
   }
 
@@ -146,6 +185,7 @@ export default function WarmupPage() {
       const saved = policy.id
         ? await apiFetch(`/api/v1/warmup/policies/${policy.id}/`, { method: "PUT", body })
         : await apiFetch("/api/v1/warmup/policies/add/", { method: "POST", body });
+      policyDirtyRef.current = false;
       setPolicy({ ...defaultPolicy, ...saved });
       setMessage("Налаштування прогріву збережено.");
       load();
@@ -208,8 +248,8 @@ export default function WarmupPage() {
     }
   }
 
-  async function pausePlan(planId) {
-    await apiFetch(`/api/v1/warmup/plans/${planId}/pause/`, { method: "POST", body: {} });
+  async function stopPlan(planId) {
+    await apiFetch(`/api/v1/warmup/plans/${planId}/stop/`, { method: "POST", body: { purge_redis: true } });
     load();
   }
 
@@ -218,6 +258,12 @@ export default function WarmupPage() {
       method: "POST",
       body: { mode: "all", clear_logs: true, purge_redis: true },
     });
+    load();
+  }
+
+  async function deleteTarget(targetId) {
+    setSelectedTargets((prev) => prev.filter((id) => id !== targetId));
+    await apiFetch(`/api/v1/warmup/targets/${targetId}/`, { method: "DELETE" });
     load();
   }
 
@@ -239,6 +285,7 @@ export default function WarmupPage() {
         <div className="section-title">
           <span className="section-icon green">⚙</span>
           <div><h3>Налаштування прогріву</h3><p>Розклад активності та автопідбір лімітів</p></div>
+          <button className="ghost-button" onClick={savePolicy}>Зберегти</button>
         </div>
         <div className="warmup-grid two">
           <div className="dashed-panel">
@@ -339,8 +386,15 @@ export default function WarmupPage() {
             ))}
           </div>
           <div className="field-row compact">
-            <label>Джерело читання
-              <select value={policy.enable_read_channels ? "subscriptions" : "disabled"} onChange={(e) => updatePolicyField("enable_read_channels", e.target.value !== "disabled")}>
+            <label>Джерело прогріву
+              <select
+                value={policy.enable_read_channels ? policy.warmup_source : "disabled"}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  updatePolicyField("enable_read_channels", value !== "disabled");
+                  if (value !== "disabled") updatePolicyField("warmup_source", value);
+                }}
+              >
                 <option value="subscriptions">Із підписок</option>
                 <option value="targets">Із targets</option>
                 <option value="disabled">Вимкнено</option>
@@ -396,6 +450,7 @@ export default function WarmupPage() {
           {overview.targets.map((target) => (
             <button key={target.id} className={selectedTargets.includes(target.id) ? "active" : ""} onClick={() => setSelectedTargets((prev) => prev.includes(target.id) ? prev.filter((id) => id !== target.id) : [...prev, target.id])}>
               <b>{target.title}</b><span>{target.value}</span>
+              <small onClick={(event) => { event.stopPropagation(); deleteTarget(target.id); }}>Видалити</small>
             </button>
           ))}
         </div>
@@ -421,27 +476,37 @@ export default function WarmupPage() {
           <div><h3>Плани прогріву</h3><p>Керування активними циклами</p></div>
         </div>
         <div className="plan-grid">
-          {overview.plans.map((plan) => (
-            <article key={plan.id} className="plan-card">
-              <div><b>{plan.name}</b><span>{plan.account_count} акаунт(ів), {plan.target_count} target(ів)</span></div>
-              <strong className={`badge ${plan.status === "running" ? "green" : "gray"}`}>{plan.status}</strong>
-              <small>queue {plan.queued_count} · ok {plan.succeeded_count} · failed {plan.failed_count}</small>
-              <button onClick={() => pausePlan(plan.id)}>Stop</button>
-            </article>
-          ))}
+          {overview.plans.map((plan) => {
+            const progress = planProgress(plan);
+            return (
+              <article key={plan.id} className="plan-card">
+                <div><b>{plan.name}</b><span>{plan.account_count} акаунт(ів), {plan.target_count} target(ів)</span></div>
+                <strong className={`badge ${plan.status === "running" ? "green" : "gray"}`}>{plan.status}</strong>
+                <small>queue {plan.queued_count} · ok {plan.succeeded_count} · failed {plan.failed_count}</small>
+                <div className="session-progress">
+                  <div>
+                    <span>{progress.percent}%</span>
+                    <b>{progress.remaining}</b>
+                  </div>
+                  <i><em style={{ width: `${progress.percent}%` }} /></i>
+                </div>
+                <button onClick={() => stopPlan(plan.id)}>Stop</button>
+              </article>
+            );
+          })}
         </div>
       </section>
 
       <section className="warmup-card logs-card">
         <div className="log-toolbar">
           <span className="online-dot">● в мережі</span>
-          <span>Усі {overview.logs.length}</span>
-          <span>Успіх {overview.logs.filter((log) => log.level === "success" || log.level === "info").length}</span>
-          <span>Помилки {overview.logs.filter((log) => log.level === "error").length}</span>
+          <span>Усі {visibleLogs.length}</span>
+          <span>Успіх {visibleLogs.filter((log) => log.level === "success" || log.level === "info").length}</span>
+          <span>Помилки {visibleLogs.filter((log) => log.level === "error").length}</span>
         </div>
         <div className="terminal">
-          {overview.logs.length === 0 && <div className="empty-state">Логів поки немає</div>}
-          {overview.logs.map((log) => (
+          {visibleLogs.length === 0 && <div className="empty-state">Логів поки немає</div>}
+          {[...visibleLogs].reverse().map((log) => (
             <div key={log.id} className={`terminal-line ${log.level}`}>
               <time>{new Date(log.created_at).toLocaleTimeString("uk-UA")}</time>
               <span>{log.level === "error" ? "❌" : log.level === "warning" ? "⚠️" : "✅"}</span>
