@@ -267,7 +267,16 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
         return obj.warmup_plans.filter(status="running").exists()
 
     def _has_running_parsing(self, obj):
-        return bool(getattr(obj, "_has_running_parsing", False))
+        cached = getattr(obj, "_has_running_parsing", None)
+        if cached is not None:
+            return cached
+        from apps.channel_parser.models import ChannelParserJob
+        from apps.message_parser.models import MessageParserJob
+
+        return (
+            obj.channel_parser_jobs.filter(status=ChannelParserJob.Status.RUNNING).exists()
+            or obj.message_parser_jobs.filter(status=MessageParserJob.Status.RUNNING).exists()
+        )
 
     def _current_warmup_action(self, obj):
         cached = getattr(obj, "_current_warmup_action_cache", None)

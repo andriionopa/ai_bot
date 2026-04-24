@@ -93,10 +93,12 @@ function levelForPolicy(policy) {
 export default function WarmupPage() {
   const [overview, setOverview] = useState({ policies: [], targets: [], plans: [], actions: [], logs: [] });
   const [accountsOverview, setAccountsOverview] = useState({ accounts: [] });
+  const [parserOverview, setParserOverview] = useState({ channel_templates: [] });
   const [policy, setPolicy] = useState(defaultPolicy);
   const [selectedAccounts, setSelectedAccounts] = useState([]);
   const [targetText, setTargetText] = useState("");
   const [selectedTargets, setSelectedTargets] = useState([]);
+  const [selectedChannelTemplateId, setSelectedChannelTemplateId] = useState(null);
   const [session, setSession] = useState("30");
   const [timezone, setTimezone] = useState("Europe/Kyiv");
   const [error, setError] = useState("");
@@ -108,12 +110,18 @@ export default function WarmupPage() {
     setError("");
     try {
       await apiFetch("/api/v1/auth/me/");
-      const [warmup, accounts] = await Promise.all([
+      const [warmup, accounts, parser] = await Promise.all([
         apiFetch("/api/v1/warmup/overview/"),
         apiFetch("/api/v1/accounts/overview/"),
+        apiFetch("/api/v1/parser/channels/overview/"),
       ]);
       setOverview(warmup);
       setAccountsOverview(accounts);
+      setParserOverview(parser);
+      setSelectedTargets((prev) => {
+        const existingIds = new Set((warmup.targets || []).map((target) => target.id));
+        return prev.filter((id) => existingIds.has(id));
+      });
       if (warmup.policies?.[0] && (forcePolicySync || !policyDirtyRef.current)) {
         setPolicy({ ...defaultPolicy, ...warmup.policies[0] });
       }
@@ -215,13 +223,41 @@ export default function WarmupPage() {
     }
   }
 
+  async function importChannelTemplate(templateId) {
+    setError("");
+    try {
+      const response = await apiFetch("/api/v1/warmup/targets/import-channel-template/", {
+        method: "POST",
+        body: { template_id: templateId, visibility: "public" },
+      });
+      return response;
+    } catch (exc) {
+      setError(normalizeApiError(exc));
+      return null;
+    }
+  }
+
   async function startWarmup() {
     setError("");
     setMessage("");
     const savedPolicy = await savePolicy();
     if (!savedPolicy) return;
     const targets = await importTargets();
-    const ids = selectedTargets.length ? selectedTargets : targets.map((target) => target.id);
+    let templateTargetIds = [];
+    if (selectedChannelTemplateId) {
+      const importedTemplate = await importChannelTemplate(selectedChannelTemplateId);
+      if (!importedTemplate) return;
+      templateTargetIds = importedTemplate.target_ids || [];
+    }
+    const availableTargetIds = new Set((targets || []).map((target) => target.id));
+    const normalizedSelectedTargets = selectedTargets.filter((id) => availableTargetIds.has(id));
+    if (normalizedSelectedTargets.length !== selectedTargets.length) {
+      setSelectedTargets(normalizedSelectedTargets);
+    }
+    const ids = Array.from(new Set([
+      ...templateTargetIds,
+      ...(normalizedSelectedTargets.length ? normalizedSelectedTargets : (targets || []).map((target) => target.id)),
+    ]));
     if (!selectedAccounts.length) {
       setError("Виберіть акаунти для прогріву.");
       return;
@@ -445,15 +481,22 @@ export default function WarmupPage() {
           <span className="section-icon pink">⌖</span>
           <div><h3>Для вступлення</h3><p>Додайте folder addlist або список @username / t.me каналів і груп</p></div>
         </div>
+        {!!(parserOverview.channel_templates || []).length && (
+          <div className="target-list" style={{ marginBottom: 14 }}>
+            {parserOverview.channel_templates.map((template) => (
+              <button
+                key={template.id}
+                type="button"
+                className={selectedChannelTemplateId === template.id ? "active" : ""}
+                onClick={() => setSelectedChannelTemplateId((prev) => (prev === template.id ? null : template.id))}
+              >
+                <b>{template.name}</b>
+                <span>{template.item_count || 0} каналів із шаблону</span>
+              </button>
+            ))}
+          </div>
+        )}
         <textarea className="large-textarea" value={targetText} onChange={(e) => setTargetText(e.target.value)} placeholder={"https://t.me/addlist/...\n@cryptogroup\nhttps://t.me/joinchat/..."} />
-        <div className="target-list">
-          {overview.targets.map((target) => (
-            <button key={target.id} className={selectedTargets.includes(target.id) ? "active" : ""} onClick={() => setSelectedTargets((prev) => prev.includes(target.id) ? prev.filter((id) => id !== target.id) : [...prev, target.id])}>
-              <b>{target.title}</b><span>{target.value}</span>
-              <small onClick={(event) => { event.stopPropagation(); deleteTarget(target.id); }}>Видалити</small>
-            </button>
-          ))}
-        </div>
       </section>
 
       <section className="warmup-card launch-panel">

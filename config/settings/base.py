@@ -82,6 +82,9 @@ INSTALLED_APPS = [
     "apps.telegram_accounts",
     "apps.profile_generator",
     "apps.warmup",
+    "apps.channel_parser",
+    "apps.message_parser",
+    "apps.comment_parser",
     "apps.realtime",
 ]
 
@@ -141,6 +144,12 @@ REDIS_URL = env("REDIS_URL", "redis://127.0.0.1:6379/0")
 CHANNEL_REDIS_URL = env("CHANNEL_REDIS_URL", "redis://127.0.0.1:6379/1")
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", "redis://127.0.0.1:6379/2")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", "redis://127.0.0.1:6379/3")
+CELERY_IMPORTS = (
+    "apps.telegram_accounts.tasks",
+    "apps.warmup.tasks",
+    "apps.channel_parser.tasks",
+    "apps.message_parser.tasks",
+)
 
 CHANNEL_LAYERS = {
     "default": {

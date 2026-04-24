@@ -24,6 +24,9 @@ urlpatterns = [
     path("api/v1/accounts/", include("apps.telegram_accounts.urls")),
     path("api/v1/profiles/", include("apps.profile_generator.urls")),
     path("api/v1/warmup/", include("apps.warmup.urls")),
+    path("api/v1/parser/channels/", include("apps.channel_parser.urls")),
+    path("api/v1/parser/messages/", include("apps.message_parser.urls")),
+    path("api/v1/parser/comments/", include("apps.comment_parser.urls")),
     path("api/v1/realtime/", include("apps.realtime.urls")),
     path("api/v1/auth/token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
 ]

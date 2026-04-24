@@ -6,6 +6,7 @@ from rest_framework import serializers
 
 from apps.telegram_accounts.models import TelegramAccount
 from apps.warmup.models import WarmupAction, WarmupLog, WarmupPlan, WarmupPolicy, WarmupTarget
+from apps.channel_parser.models import ChannelCollectionTemplate
 
 
 ACTION_UI_LABELS = {
@@ -254,6 +255,17 @@ class WarmupTargetBulkImportSerializer(serializers.Serializer):
                 }
             )
         return validated_items
+
+
+class WarmupTargetTemplateImportSerializer(serializers.Serializer):
+    template_id = serializers.PrimaryKeyRelatedField(queryset=ChannelCollectionTemplate.objects.none())
+    visibility = serializers.ChoiceField(choices=WarmupTarget.Visibility.choices, default=WarmupTarget.Visibility.PUBLIC)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            self.fields["template_id"].queryset = ChannelCollectionTemplate.objects.filter(owner=request.user)
 
 
 class WarmupPlanSerializer(serializers.ModelSerializer):

@@ -50,6 +50,8 @@ from apps.telegram_accounts.services import (
     telegram_runtime_workdir,
 )
 from apps.telegram_accounts.tasks import ping_proxy_task, register_account_runtime_event_task
+from apps.channel_parser.models import ChannelParserJob
+from apps.message_parser.models import MessageParserJob
 from apps.warmup.models import WarmupPlan
 
 
@@ -92,7 +94,18 @@ class TelegramAccountViewSet(OwnerQuerysetMixin, viewsets.ModelViewSet):
             accounts=OuterRef("pk"),
             status=WarmupPlan.Status.RUNNING,
         )
-        return super().get_queryset().annotate(_has_running_warmup=Exists(running_warmup))
+        running_parsing = ChannelParserJob.objects.filter(
+            accounts=OuterRef("pk"),
+            status=ChannelParserJob.Status.RUNNING,
+        )
+        running_message_parsing = MessageParserJob.objects.filter(
+            accounts=OuterRef("pk"),
+            status=MessageParserJob.Status.RUNNING,
+        )
+        return super().get_queryset().annotate(
+            _has_running_warmup=Exists(running_warmup),
+            _has_running_parsing=Exists(running_parsing) | Exists(running_message_parsing),
+        )
 
     def get_parsers(self):
         if getattr(self, "action", None) == "add":

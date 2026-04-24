@@ -14,8 +14,10 @@ from apps.warmup.serializers import (
     WarmupPlanSerializer,
     WarmupPolicySerializer,
     WarmupTargetBulkImportSerializer,
+    WarmupTargetTemplateImportSerializer,
     WarmupTargetSerializer,
 )
+from apps.channel_parser.models import ChannelCollectionItem
 from apps.warmup.services import (
     clear_warmup_actions,
     pause_warmup_plan,
@@ -75,6 +77,61 @@ class WarmupTargetViewSet(OwnerQuerysetMixin, viewsets.ModelViewSet):
                 "created_count": len(created),
                 "skipped_count": skipped,
                 "targets": WarmupTargetSerializer(created, many=True).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=False, methods=["post"], url_path="import-channel-template")
+    def import_channel_template(self, request):
+        serializer = WarmupTargetTemplateImportSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        template = serializer.validated_data["template_id"]
+        visibility = serializer.validated_data["visibility"]
+        items = ChannelCollectionItem.objects.filter(owner=request.user, template=template).order_by("title", "id")
+        created: list[WarmupTarget] = []
+        skipped = 0
+        existing_by_value = {
+            target.value: target.id
+            for target in WarmupTarget.objects.filter(owner=request.user).only("id", "value")
+        }
+        selected_target_ids: list[int] = []
+
+        for item in items:
+            value = item.url or (f"@{item.username}" if item.username else "")
+            if not value:
+                skipped += 1
+                continue
+            if value in existing_by_value:
+                skipped += 1
+                selected_target_ids.append(existing_by_value[value])
+                continue
+            created.append(
+                WarmupTarget(
+                    owner=request.user,
+                    title=(item.title or item.username or value)[:255],
+                    target_type=WarmupTarget.TargetType.CHANNEL,
+                    visibility=visibility,
+                    value=value,
+                )
+            )
+
+        WarmupTarget.objects.bulk_create(created)
+        if created:
+            created_targets = list(
+                WarmupTarget.objects.filter(
+                    owner=request.user,
+                    value__in=[target.value for target in created],
+                ).only("id", "value", "title", "target_type", "visibility", "status", "created_at", "updated_at")
+            )
+            selected_target_ids.extend(target.id for target in created_targets)
+        else:
+            created_targets = []
+        return Response(
+            {
+                "created_count": len(created),
+                "skipped_count": skipped,
+                "target_ids": selected_target_ids,
+                "targets": WarmupTargetSerializer(created_targets, many=True).data,
             },
             status=status.HTTP_201_CREATED,
         )

@@ -7,6 +7,13 @@ import { apiFetch, clearAuthTokens } from "@/lib/api";
 const nav = [
   { href: "/", icon: "▦", label: "Менеджер акаунтів" },
   { href: "/warmup", icon: "♨", label: "Прогрів акаунтів" },
+  { href: "/parser/channels", icon: "▤", label: "Парсинг даних" },
+];
+
+const parserModules = [
+  { href: "/parser/channels", icon: "▣", label: "Парсер каналів" },
+  { href: "/parser/messages", icon: "☰", label: "Парсер по повідомленнях" },
+  { href: "/parser/comments", icon: "✦", label: "Парсер коментарів" },
 ];
 
 export default function AppShell({ children, userLabel }) {
@@ -49,14 +56,32 @@ export default function AppShell({ children, userLabel }) {
         <div className="nav-section">Модулі</div>
         <div className="nav-item disabled"><span className="nav-icon">✎</span>Нейрокоментинг</div>
         <div className="nav-item disabled"><span className="nav-icon">◌</span>Масові реакції</div>
-        <div className="nav-item disabled"><span className="nav-icon">▣</span>Парсинг даних</div>
+        {parserModules.map((item) => {
+          const active = pathname.startsWith(item.href);
+          return (
+            <Link key={item.href} href={item.href} className={`nav-item ${active ? "active" : ""}`}>
+              <span className="nav-icon">{item.icon}</span>
+              <span>{item.label}</span>
+            </Link>
+          );
+        })}
       </aside>
 
       <main className="main">
         <header className="topbar">
           <div>
             <div className="eyebrow">workspace</div>
-            <h1>{pathname === "/warmup" ? "Прогрів акаунтів" : "Менеджер акаунтів"}</h1>
+            <h1>
+              {pathname === "/warmup"
+                ? "Прогрів акаунтів"
+                : pathname === "/parser/messages"
+                  ? "Парсер по повідомленнях"
+                  : pathname === "/parser/comments"
+                    ? "Парсер коментарів"
+                    : pathname.startsWith("/parser")
+                      ? "Парсинг даних"
+                      : "Менеджер акаунтів"}
+            </h1>
           </div>
           <div className="topbar-actions">
             <span className="user-pill">{userLabel || "operator"}</span>
