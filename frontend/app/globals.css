@@ -1592,6 +1592,94 @@ label {
   color: #b7c7dc;
 }
 
+/* ── Sidebar collapsible parser group ───────────────────────────────────── */
+
+.nav-group-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 58px;
+  padding: 0 14px;
+  color: #b7c4d8;
+  border-radius: 18px;
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: left;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.nav-group-header:hover {
+  color: #cdd9ee;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.nav-group-header.active {
+  color: #8decff;
+  background: linear-gradient(90deg, rgba(27, 164, 255, 0.22), rgba(28, 201, 138, 0.1));
+  border-color: rgba(63, 215, 238, 0.28);
+}
+
+.nav-group-header:active {
+  transform: none;
+  box-shadow: none;
+}
+
+.nav-chevron {
+  margin-left: auto;
+  font-size: 11px;
+  color: #5a7090;
+  transition: color 0.15s ease;
+}
+
+.nav-group-header.active .nav-chevron,
+.nav-group-header:hover .nav-chevron {
+  color: #7ab8d8;
+}
+
+.nav-sub-list {
+  display: grid;
+  gap: 2px;
+  padding: 4px 0 6px 18px;
+  border-left: 1px solid rgba(63, 215, 238, 0.14);
+  margin-left: 30px;
+  margin-bottom: 4px;
+}
+
+.nav-sub-item {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 12px;
+  color: #7a90ab;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  white-space: nowrap;
+}
+
+.nav-sub-item:hover:not(.disabled) {
+  color: #b8d0e8;
+  background: rgba(27, 164, 255, 0.08);
+}
+
+.nav-sub-item.active {
+  color: #7de8ff;
+  background: rgba(27, 164, 255, 0.14);
+  border-color: rgba(63, 215, 238, 0.22);
+}
+
+.nav-sub-item.disabled {
+  opacity: 0.38;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+
 .ghost-button.danger,
 button.danger {
   color: #ffb5bf;

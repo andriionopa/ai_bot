@@ -1,33 +1,45 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { apiFetch, clearAuthTokens } from "@/lib/api";
 
-const nav = [
+const mainNav = [
   { href: "/", icon: "▦", label: "Менеджер акаунтів" },
   { href: "/warmup", icon: "♨", label: "Прогрів акаунтів" },
-  { href: "/parser/channels", icon: "▤", label: "Парсинг даних" },
 ];
 
-const parserModules = [
-  { href: "/parser/channels", icon: "▣", label: "Парсер каналів" },
-  { href: "/parser/messages", icon: "☰", label: "Парсер по повідомленнях" },
-  { href: "/parser/comments", icon: "✦", label: "Парсер коментарів" },
+const parserItems = [
+  { href: "/parser/channels", label: "Парсер каналів" },
+  { href: null,               label: "Парсер груп",             disabled: true },
+  { href: null,               label: "Парсер юзерів",           disabled: true },
+  { href: "/parser/messages", label: "Парсер по повідомленнях" },
+  { href: "/parser/comments", label: "Парсер коментарів" },
+  { href: null,               label: "Історія парсингу",        disabled: true },
 ];
+
+const PAGE_TITLE = {
+  "/parser/channels": "Парсер каналів",
+  "/parser/messages": "Парсер по повідомленнях",
+  "/parser/comments": "Парсер коментарів",
+  "/warmup":          "Прогрів акаунтів",
+};
 
 export default function AppShell({ children, userLabel }) {
   const pathname = usePathname();
+  const onParser = pathname.startsWith("/parser");
+  const [parserOpen, setParserOpen] = useState(onParser);
 
   async function logout() {
     try {
       await apiFetch("/api/v1/auth/logout/", { method: "POST", body: {} });
-    } catch {
-      // Even if the server session is already gone, return to login.
-    }
+    } catch {}
     clearAuthTokens();
     window.location.href = "/auth";
   }
+
+  const pageTitle = PAGE_TITLE[pathname] ?? (onParser ? "Парсинг даних" : "Менеджер акаунтів");
 
   return (
     <div className="app-shell">
@@ -42,7 +54,7 @@ export default function AppShell({ children, userLabel }) {
 
         <div className="nav-section">Головна</div>
         <nav className="nav-list">
-          {nav.map((item) => {
+          {mainNav.map((item) => {
             const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
             return (
               <Link key={item.href} href={item.href} className={`nav-item ${active ? "active" : ""}`}>
@@ -56,32 +68,42 @@ export default function AppShell({ children, userLabel }) {
         <div className="nav-section">Модулі</div>
         <div className="nav-item disabled"><span className="nav-icon">✎</span>Нейрокоментинг</div>
         <div className="nav-item disabled"><span className="nav-icon">◌</span>Масові реакції</div>
-        {parserModules.map((item) => {
-          const active = pathname.startsWith(item.href);
-          return (
-            <Link key={item.href} href={item.href} className={`nav-item ${active ? "active" : ""}`}>
-              <span className="nav-icon">{item.icon}</span>
-              <span>{item.label}</span>
-            </Link>
-          );
-        })}
+
+        {/* Парсинг даних — collapsible group */}
+        <button
+          type="button"
+          className={`nav-group-header ${onParser ? "active" : ""} ${parserOpen ? "open" : ""}`}
+          onClick={() => setParserOpen((prev) => !prev)}
+        >
+          <span className="nav-icon">◈</span>
+          <span>Парсинг даних</span>
+          <span className="nav-chevron">{parserOpen ? "∧" : "∨"}</span>
+        </button>
+
+        {parserOpen && (
+          <div className="nav-sub-list">
+            {parserItems.map((item, idx) =>
+              item.disabled || !item.href ? (
+                <span key={idx} className="nav-sub-item disabled">{item.label}</span>
+              ) : (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`nav-sub-item ${pathname === item.href ? "active" : ""}`}
+                >
+                  {item.label}
+                </Link>
+              )
+            )}
+          </div>
+        )}
       </aside>
 
       <main className="main">
         <header className="topbar">
           <div>
             <div className="eyebrow">workspace</div>
-            <h1>
-              {pathname === "/warmup"
-                ? "Прогрів акаунтів"
-                : pathname === "/parser/messages"
-                  ? "Парсер по повідомленнях"
-                  : pathname === "/parser/comments"
-                    ? "Парсер коментарів"
-                    : pathname.startsWith("/parser")
-                      ? "Парсинг даних"
-                      : "Менеджер акаунтів"}
-            </h1>
+            <h1>{pageTitle}</h1>
           </div>
           <div className="topbar-actions">
             <span className="user-pill">{userLabel || "operator"}</span>
