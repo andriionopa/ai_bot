@@ -501,9 +501,6 @@ def run_parser_job(job_id: int) -> ChannelParserJob:
                 register_account_runtime_event(
                     account=account,
                     event_type=AccountHealthEvent.EventType.FLOOD_WAIT,
-                    severity=AccountHealthEvent.Severity.HIGH,
-                    score_delta=-15,
-                    reason=f"Parser FloodWait {getattr(exc, 'value', '')}s",
                     metadata={"job_id": job.id, "seconds": getattr(exc, "value", None)},
                 )
                 log_parser_event(job, level=ChannelParserLog.Level.ERROR, account=account, message=f"{account.label}: FloodWait, акаунт відправлено в карантин")

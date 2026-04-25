@@ -75,6 +75,7 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
     current_warmup_action_type = serializers.SerializerMethodField()
     current_warmup_action_status = serializers.SerializerMethodField()
     current_warmup_action_label = serializers.SerializerMethodField()
+    is_reacting = serializers.SerializerMethodField()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -114,6 +115,7 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             "current_warmup_action_type",
             "current_warmup_action_status",
             "current_warmup_action_label",
+            "is_reacting",
             "birth_date",
             "avatar_url",
             "health_score",
@@ -154,6 +156,7 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             "current_warmup_action_type",
             "current_warmup_action_status",
             "current_warmup_action_label",
+            "is_reacting",
             "health_score",
             "liveness_score",
             "risk_level",
@@ -277,6 +280,15 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             obj.channel_parser_jobs.filter(status=ChannelParserJob.Status.RUNNING).exists()
             or obj.message_parser_jobs.filter(status=MessageParserJob.Status.RUNNING).exists()
         )
+
+    def get_is_reacting(self, obj):
+        cached = getattr(obj, "_is_reacting_cache", None)
+        if cached is not None:
+            return cached
+        from apps.reaction_bot.models import ReactionJob
+        result = obj.reaction_jobs.filter(status=ReactionJob.Status.RUNNING).exists()
+        obj._is_reacting_cache = result
+        return result
 
     def _current_warmup_action(self, obj):
         cached = getattr(obj, "_current_warmup_action_cache", None)

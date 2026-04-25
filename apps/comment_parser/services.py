@@ -450,9 +450,6 @@ def run_parser_job(job_id: int) -> CommentParserJob:
                 register_account_runtime_event(
                     account=account,
                     event_type=AccountHealthEvent.EventType.FLOOD_WAIT,
-                    severity=AccountHealthEvent.Severity.HIGH,
-                    score_delta=-15,
-                    reason=f"Comment parser FloodWait {getattr(exc, 'value', '')}s",
                     metadata={"job_id": job.id, "seconds": getattr(exc, "value", None)},
                 )
                 log_parser_event(

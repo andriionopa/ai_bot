@@ -23,6 +23,7 @@ const PAGE_TITLE = {
   "/parser/comments": "Парсер коментарів",
   "/parser/history":  "Історія парсингу",
   "/warmup":          "Прогрів акаунтів",
+  "/reactions":       "Масові реакції",
 };
 
 export default function AppShell({ children, userLabel }) {
@@ -66,7 +67,9 @@ export default function AppShell({ children, userLabel }) {
 
         <div className="nav-section">Модулі</div>
         <div className="nav-item disabled"><span className="nav-icon">✎</span>Нейрокоментинг</div>
-        <div className="nav-item disabled"><span className="nav-icon">◌</span>Масові реакції</div>
+        <Link href="/reactions" className={`nav-item${pathname === "/reactions" ? " active" : ""}`}>
+          <span className="nav-icon">◌</span>Масові реакції
+        </Link>
 
         {/* Парсинг даних — collapsible group */}
         <button

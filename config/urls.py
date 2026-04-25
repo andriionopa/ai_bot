@@ -27,6 +27,7 @@ urlpatterns = [
     path("api/v1/parser/channels/", include("apps.channel_parser.urls")),
     path("api/v1/parser/messages/", include("apps.message_parser.urls")),
     path("api/v1/parser/comments/", include("apps.comment_parser.urls")),
+    path("api/v1/reactions/", include("apps.reaction_bot.urls")),
     path("api/v1/realtime/", include("apps.realtime.urls")),
     path("api/v1/auth/token/refresh/", TokenRefreshView.as_view(), name="token-refresh"),
 ]
