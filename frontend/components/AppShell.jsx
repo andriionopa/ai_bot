@@ -12,17 +12,16 @@ const mainNav = [
 
 const parserItems = [
   { href: "/parser/channels", label: "Парсер каналів" },
-  { href: null,               label: "Парсер груп",             disabled: true },
-  { href: null,               label: "Парсер юзерів",           disabled: true },
   { href: "/parser/messages", label: "Парсер по повідомленнях" },
   { href: "/parser/comments", label: "Парсер коментарів" },
-  { href: null,               label: "Історія парсингу",        disabled: true },
+  { href: "/parser/history",  label: "Історія парсингу" },
 ];
 
 const PAGE_TITLE = {
   "/parser/channels": "Парсер каналів",
   "/parser/messages": "Парсер по повідомленнях",
   "/parser/comments": "Парсер коментарів",
+  "/parser/history":  "Історія парсингу",
   "/warmup":          "Прогрів акаунтів",
 };
 

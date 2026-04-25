@@ -62,6 +62,9 @@ export default function MessageParserPage() {
   const [sortBy, setSortBy] = useState("messages");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [selectedResultIds, setSelectedResultIds] = useState([]);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [userTemplateName, setUserTemplateName] = useState("");
 
   async function load() {
     try {
@@ -135,6 +138,56 @@ export default function MessageParserPage() {
 
   function removeSource(source) {
     setForm((prev) => ({ ...prev, sources: (prev.sources || []).filter((item) => item !== source) }));
+  }
+
+  function toggleResult(resultId) {
+    setSelectedResultIds((prev) => prev.includes(resultId) ? prev.filter((id) => id !== resultId) : [...prev, resultId]);
+  }
+
+  function selectAllResults() {
+    setSelectedResultIds(filteredResults.map((r) => r.id));
+  }
+
+  function clearSelectedResults() {
+    setSelectedResultIds([]);
+  }
+
+  async function saveUserTemplate({ templateId = null, useAll = false } = {}) {
+    setError("");
+    setMessage("");
+    if (!latestJob) { setError("Немає результатів для шаблону."); return; }
+    if (!templateId && !userTemplateName.trim()) { setError("Вкажи назву шаблону."); return; }
+    if (!useAll && !selectedResultIds.length) { setError("Оберіть хоча б один результат."); return; }
+    try {
+      const response = await apiFetch("/api/v1/parser/channels/channel-templates/attach-user-results/", {
+        method: "POST",
+        body: {
+          template_id: templateId || undefined,
+          name: templateId ? undefined : userTemplateName.trim(),
+          job_id: latestJob.id,
+          result_ids: useAll ? [] : selectedResultIds,
+          select_all: useAll,
+          parser_type: "messages",
+        },
+      });
+      setUserTemplateName("");
+      setSelectedResultIds([]);
+      setMessage(`Шаблон «${response.template.name}»: додано ${response.added}, пропущено дублів ${response.skipped}.`);
+      await load();
+    } catch (exc) {
+      setError(normalizeApiError(exc));
+    }
+  }
+
+  async function deleteUserTemplate(templateId) {
+    setError("");
+    try {
+      await apiFetch(`/api/v1/parser/channels/channel-templates/${templateId}/`, { method: "DELETE", body: {} });
+      setMessage("Шаблон видалено.");
+      await load();
+    } catch (exc) {
+      setError(normalizeApiError(exc));
+    }
   }
 
   function toggleTemplate(templateId) {
@@ -446,7 +499,7 @@ export default function MessageParserPage() {
         <section className="warmup-card dashed-panel">
           <div className="section-title">
             <h3>Результати парсингу</h3>
-            <span>{filteredResults.length}</span>
+            <span>{filteredResults.length}{selectedResultIds.length ? ` · вибрано ${selectedResultIds.length}` : ""}</span>
           </div>
           <div className="parser-result-toolbar">
             <input value={resultSearch} onChange={(event) => setResultSearch(event.target.value)} placeholder="Пошук результатів..." />
@@ -455,7 +508,10 @@ export default function MessageParserPage() {
               <option value="recent">За останньою активністю</option>
               <option value="name">За іменем</option>
             </select>
-            <button type="button" className="ghost-button" onClick={clearResults}>Очистити</button>
+            <button type="button" className="ghost-button" onClick={() => setTemplatesOpen(true)}>Шаблони</button>
+            <button type="button" className="ghost-button" onClick={selectAllResults} disabled={!filteredResults.length}>Вибрати всі</button>
+            <button type="button" className="ghost-button" onClick={clearSelectedResults} disabled={!selectedResultIds.length}>Зняти вибір</button>
+            <button type="button" className="ghost-button danger" onClick={clearResults}>Очистити</button>
             <button type="button" className="ghost-button" onClick={copyLinks}>Скопіювати профілі</button>
             <button type="button" className="ghost-button" onClick={() => exportResults("csv")}>CSV</button>
             <button type="button" className="ghost-button" onClick={() => exportResults("json")}>JSON</button>
@@ -463,7 +519,7 @@ export default function MessageParserPage() {
           </div>
           <div className="parser-results-list">
             {filteredResults.map((result) => (
-              <article key={result.id} className="parser-result-card">
+              <article key={result.id} className={`parser-result-card ${selectedResultIds.includes(result.id) ? "selected" : ""}`}>
                 <div>
                   <h4>{result.full_name || result.username || result.telegram_user_id}</h4>
                   <p>{result.username ? `@${result.username}` : "без username"} · {result.source_title || result.source_ref}</p>
@@ -473,6 +529,9 @@ export default function MessageParserPage() {
                   {!!result.matched_keywords?.length && <small>ключові слова: {result.matched_keywords.join(", ")}</small>}
                 </div>
                 <div className="parser-actions">
+                  <button type="button" className="ghost-button" onClick={() => toggleResult(result.id)}>
+                    {selectedResultIds.includes(result.id) ? "Зняти" : "Вибрати"}
+                  </button>
                   {result.profile_url ? <a className="ghost-button" href={result.profile_url} target="_blank" rel="noreferrer">Відкрити</a> : null}
                 </div>
               </article>
@@ -480,6 +539,34 @@ export default function MessageParserPage() {
           </div>
         </section>
       </div>
+
+      {templatesOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setTemplatesOpen(false)}>
+          <div className="modal panel" onMouseDown={(e) => e.stopPropagation()}>
+            <button type="button" className="modal-close ghost-button" onClick={() => setTemplatesOpen(false)}>×</button>
+            <h2>Шаблони юзерів</h2>
+            <div className="parser-input-row">
+              <input value={userTemplateName} onChange={(e) => setUserTemplateName(e.target.value)} placeholder="Назва шаблону..." />
+              <button type="button" onClick={() => saveUserTemplate()} disabled={!selectedResultIds.length}>Зберегти вибраних</button>
+              <button type="button" className="ghost-button" onClick={() => saveUserTemplate({ useAll: true })} disabled={!filteredResults.length}>Всі результати</button>
+            </div>
+            <div className="parser-template-list">
+              {(overview.channel_templates || []).length ? (overview.channel_templates || []).map((tpl) => (
+                <article key={tpl.id} className="parser-template-card">
+                  <div>
+                    <b>{tpl.name}</b>
+                    <small>{tpl.item_count || 0} юзерів</small>
+                  </div>
+                  <div className="parser-actions">
+                    <button type="button" className="ghost-button" onClick={() => saveUserTemplate({ templateId: tpl.id })} disabled={!selectedResultIds.length}>Додати вибраних</button>
+                    <button type="button" className="ghost-button danger" onClick={() => deleteUserTemplate(tpl.id)}>Видалити</button>
+                  </div>
+                </article>
+              )) : <div className="empty-state">Шаблонів ще немає.</div>}
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }

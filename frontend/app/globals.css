@@ -878,10 +878,13 @@ label {
 .segmented .active,
 .session-options .active,
 .account-picker .active,
+.account-picker .selected,
+.parser-account-picker .selected,
 .target-list .active,
 .intensity-list .active {
   border-color: rgba(63, 215, 238, 0.78);
   background: rgba(27, 164, 255, 0.2);
+  color: #7de8ff;
 }
 
 .large-textarea {
@@ -1445,6 +1448,36 @@ label {
 
 .parser-actions {
   margin-bottom: 16px;
+}
+
+.pill-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.pill-button {
+  padding: 7px 18px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: rgba(17, 28, 48, 0.6);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.pill-button:hover {
+  border-color: rgba(63, 215, 238, 0.36);
+  color: #b8d0e8;
+  background: rgba(27, 164, 255, 0.08);
+}
+
+.pill-button.active {
+  border-color: rgba(63, 215, 238, 0.78);
+  background: rgba(27, 164, 255, 0.2);
+  color: #7de8ff;
 }
 
 .parser-account-picker button span {

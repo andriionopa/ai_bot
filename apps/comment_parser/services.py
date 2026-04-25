@@ -16,6 +16,7 @@ from django.db.models import Count
 from django.utils import timezone
 from pyrogram.errors import FloodWait, RPCError
 
+from apps.channel_parser.models import ChannelCollectionTemplate
 from apps.comment_parser.models import CommentParserJob, CommentParserLog, ParsedCommenter
 from apps.realtime.logging import publish_log_event
 from apps.telegram_accounts.models import AccountHealthEvent, TelegramAccount
@@ -555,6 +556,12 @@ def overview_payload(owner) -> dict[str, object]:
         "accounts": TelegramAccount.objects.filter(
             owner=owner, is_attached=True, auth_state=TelegramAccount.AuthState.CONNECTED
         ).select_related("proxy", "role_template"),
+        "channel_templates": list(
+            ChannelCollectionTemplate.objects.filter(owner=owner)
+            .annotate(item_count=Count("items", distinct=True))
+            .prefetch_related("items")
+            .order_by("name", "-created_at")
+        ),
         "templates": {
             "sales": ["товарка", "дропшипінг", "маркетплейс"],
             "crypto": ["крипта", "криптогаманець", "airdrop"],

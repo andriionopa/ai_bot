@@ -49,7 +49,7 @@ function formatDate(value) {
 }
 
 export default function CommentParserPage() {
-  const [overview, setOverview] = useState({ jobs: [], results: [], logs: [], accounts: [], templates: {} });
+  const [overview, setOverview] = useState({ jobs: [], results: [], logs: [], accounts: [], channel_templates: [], templates: {} });
   const [form, setForm] = useState(defaultForm);
   const [selectedAccounts, setSelectedAccounts] = useState([]);
   const [sourceInput, setSourceInput] = useState("");
@@ -60,6 +60,10 @@ export default function CommentParserPage() {
   const [sortBy, setSortBy] = useState("comments");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [selectedTemplateIds, setSelectedTemplateIds] = useState([]);
+  const [selectedResultIds, setSelectedResultIds] = useState([]);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [userTemplateName, setUserTemplateName] = useState("");
 
   async function load() {
     try {
@@ -136,6 +140,72 @@ export default function CommentParserPage() {
     setForm((prev) => ({ ...prev, sources: (prev.sources || []).filter((item) => item !== source) }));
   }
 
+  function toggleTemplate(templateId) {
+    setSelectedTemplateIds((prev) => prev.includes(templateId) ? prev.filter((id) => id !== templateId) : [...prev, templateId]);
+  }
+
+  function templateSources() {
+    const sources = [];
+    for (const tpl of overview.channel_templates || []) {
+      if (!selectedTemplateIds.includes(tpl.id)) continue;
+      for (const item of tpl.items || []) {
+        const src = item.url || (item.username ? `@${item.username}` : item.telegram_id);
+        if (src) sources.push(String(src));
+      }
+    }
+    return Array.from(new Set(sources));
+  }
+
+  function toggleResult(resultId) {
+    setSelectedResultIds((prev) => prev.includes(resultId) ? prev.filter((id) => id !== resultId) : [...prev, resultId]);
+  }
+
+  function selectAllResults() {
+    setSelectedResultIds(filteredResults.map((r) => r.id));
+  }
+
+  function clearSelectedResults() {
+    setSelectedResultIds([]);
+  }
+
+  async function saveUserTemplate({ templateId = null, useAll = false } = {}) {
+    setError("");
+    setMessage("");
+    if (!latestJob) { setError("Немає результатів для шаблону."); return; }
+    if (!templateId && !userTemplateName.trim()) { setError("Вкажи назву шаблону."); return; }
+    if (!useAll && !selectedResultIds.length) { setError("Оберіть хоча б один результат."); return; }
+    try {
+      const response = await apiFetch("/api/v1/parser/channels/channel-templates/attach-user-results/", {
+        method: "POST",
+        body: {
+          template_id: templateId || undefined,
+          name: templateId ? undefined : userTemplateName.trim(),
+          job_id: latestJob.id,
+          result_ids: useAll ? [] : selectedResultIds,
+          select_all: useAll,
+          parser_type: "comments",
+        },
+      });
+      setUserTemplateName("");
+      setSelectedResultIds([]);
+      setMessage(`Шаблон «${response.template.name}»: додано ${response.added}, пропущено дублів ${response.skipped}.`);
+      await load();
+    } catch (exc) {
+      setError(normalizeApiError(exc));
+    }
+  }
+
+  async function deleteUserTemplate(templateId) {
+    setError("");
+    try {
+      await apiFetch(`/api/v1/parser/channels/channel-templates/${templateId}/`, { method: "DELETE", body: {} });
+      setMessage("Шаблон видалено.");
+      await load();
+    } catch (exc) {
+      setError(normalizeApiError(exc));
+    }
+  }
+
   async function createAndStart() {
     setError("");
     setMessage("");
@@ -143,8 +213,9 @@ export default function CommentParserPage() {
       setError("Виберіть хоча б один акаунт для парсингу.");
       return;
     }
-    if (!(form.sources || []).length) {
-      setError("Додайте хоча б одне джерело.");
+    const sources = Array.from(new Set([...(form.sources || []), ...templateSources()]));
+    if (!sources.length) {
+      setError("Додайте хоча б одне джерело або оберіть шаблон.");
       return;
     }
     try {
@@ -152,6 +223,7 @@ export default function CommentParserPage() {
         method: "POST",
         body: {
           ...form,
+          sources,
           name: form.name || `Парсер коментарів ${new Date().toLocaleString("uk-UA")}`,
           account_ids: selectedAccounts,
           post_limit: Number(form.post_limit) || 50,
@@ -367,6 +439,26 @@ export default function CommentParserPage() {
             />
           </div>
 
+          {!!(overview.channel_templates || []).length && (
+            <div className="parser-template-list">
+              {(overview.channel_templates || []).map((tpl) => (
+                <article key={tpl.id} className={`parser-template-card ${selectedTemplateIds.includes(tpl.id) ? "selected" : ""}`}>
+                  <b>{tpl.name}</b>
+                  <small>{tpl.item_count || 0} джерел із шаблону</small>
+                  <div className="parser-actions">
+                    <button
+                      type="button"
+                      className={`ghost-button ${selectedTemplateIds.includes(tpl.id) ? "active" : ""}`}
+                      onClick={() => toggleTemplate(tpl.id)}
+                    >
+                      {selectedTemplateIds.includes(tpl.id) ? "Обрано" : "Використати"}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+
           {!!form.sources.length && (
             <div className="parser-template-row">
               {form.sources.map((source) => (
@@ -376,6 +468,7 @@ export default function CommentParserPage() {
               ))}
             </div>
           )}
+
 
           <div className="parser-input-row">
             <label style={{ gridColumn: "1 / -1" }}>
@@ -475,20 +568,19 @@ export default function CommentParserPage() {
         <section className="warmup-card dashed-panel">
           <div className="section-title">
             <h3>Результати парсингу</h3>
-            <span>{filteredResults.length}</span>
+            <span>{filteredResults.length}{selectedResultIds.length ? ` · вибрано ${selectedResultIds.length}` : ""}</span>
           </div>
           <div className="parser-result-toolbar">
-            <input
-              value={resultSearch}
-              onChange={(event) => setResultSearch(event.target.value)}
-              placeholder="Пошук результатів..."
-            />
+            <input value={resultSearch} onChange={(event) => setResultSearch(event.target.value)} placeholder="Пошук результатів..." />
             <select value={sortBy} onChange={(event) => setSortBy(event.target.value)}>
               <option value="comments">За кількістю коментарів</option>
               <option value="recent">За останньою активністю</option>
               <option value="name">За іменем</option>
             </select>
-            <button type="button" className="ghost-button" onClick={clearResults}>Очистити</button>
+            <button type="button" className="ghost-button" onClick={() => setTemplatesOpen(true)}>Шаблони</button>
+            <button type="button" className="ghost-button" onClick={selectAllResults} disabled={!filteredResults.length}>Вибрати всі</button>
+            <button type="button" className="ghost-button" onClick={clearSelectedResults} disabled={!selectedResultIds.length}>Зняти вибір</button>
+            <button type="button" className="ghost-button danger" onClick={clearResults}>Очистити</button>
             <button type="button" className="ghost-button" onClick={copyLinks}>Скопіювати профілі</button>
             <button type="button" className="ghost-button" onClick={() => exportResults("csv")}>CSV</button>
             <button type="button" className="ghost-button" onClick={() => exportResults("json")}>JSON</button>
@@ -496,32 +588,55 @@ export default function CommentParserPage() {
           </div>
           <div className="parser-results-list">
             {filteredResults.map((result) => (
-              <article key={result.id} className="parser-result-card">
+              <article key={result.id} className={`parser-result-card ${selectedResultIds.includes(result.id) ? "selected" : ""}`}>
                 <div>
                   <h4>{result.full_name || result.username || result.telegram_user_id}</h4>
-                  <p>
-                    {result.username ? `@${result.username}` : "без username"} · {result.source_title || result.source_ref}
-                  </p>
+                  <p>{result.username ? `@${result.username}` : "без username"} · {result.source_title || result.source_ref}</p>
                   <small>
                     коментарів: {result.comment_count} · перший: {formatDate(result.first_comment_at)} · останній: {formatDate(result.last_comment_at)}
                   </small>
-                  {!!result.matched_keywords?.length && (
-                    <small>ключові слова: {result.matched_keywords.join(", ")}</small>
-                  )}
-                  {result.sample_comment && (
-                    <small style={{ fontStyle: "italic", opacity: 0.7 }}>«{result.sample_comment.slice(0, 120)}»</small>
-                  )}
+                  {!!result.matched_keywords?.length && <small>ключові слова: {result.matched_keywords.join(", ")}</small>}
+                  {result.sample_comment && <small style={{ fontStyle: "italic", opacity: 0.7 }}>«{result.sample_comment.slice(0, 120)}»</small>}
                 </div>
                 <div className="parser-actions">
-                  {result.profile_url ? (
-                    <a className="ghost-button" href={result.profile_url} target="_blank" rel="noreferrer">Відкрити</a>
-                  ) : null}
+                  <button type="button" className="ghost-button" onClick={() => toggleResult(result.id)}>
+                    {selectedResultIds.includes(result.id) ? "Зняти" : "Вибрати"}
+                  </button>
+                  {result.profile_url ? <a className="ghost-button" href={result.profile_url} target="_blank" rel="noreferrer">Відкрити</a> : null}
                 </div>
               </article>
             ))}
           </div>
         </section>
       </div>
+
+      {templatesOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setTemplatesOpen(false)}>
+          <div className="modal panel" onMouseDown={(e) => e.stopPropagation()}>
+            <button type="button" className="modal-close ghost-button" onClick={() => setTemplatesOpen(false)}>×</button>
+            <h2>Шаблони юзерів</h2>
+            <div className="parser-input-row">
+              <input value={userTemplateName} onChange={(e) => setUserTemplateName(e.target.value)} placeholder="Назва шаблону..." />
+              <button type="button" onClick={() => saveUserTemplate()} disabled={!selectedResultIds.length}>Зберегти вибраних</button>
+              <button type="button" className="ghost-button" onClick={() => saveUserTemplate({ useAll: true })} disabled={!filteredResults.length}>Всі результати</button>
+            </div>
+            <div className="parser-template-list">
+              {(overview.channel_templates || []).length ? (overview.channel_templates || []).map((tpl) => (
+                <article key={tpl.id} className="parser-template-card">
+                  <div>
+                    <b>{tpl.name}</b>
+                    <small>{tpl.item_count || 0} юзерів</small>
+                  </div>
+                  <div className="parser-actions">
+                    <button type="button" className="ghost-button" onClick={() => saveUserTemplate({ templateId: tpl.id })} disabled={!selectedResultIds.length}>Додати вибраних</button>
+                    <button type="button" className="ghost-button danger" onClick={() => deleteUserTemplate(tpl.id)}>Видалити</button>
+                  </div>
+                </article>
+              )) : <div className="empty-state">Шаблонів ще немає.</div>}
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }

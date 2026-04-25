@@ -120,6 +120,145 @@ class ChannelCollectionTemplateViewSet(OwnerQuerysetMixin, viewsets.ModelViewSet
             .order_by("name", "-created_at")
         )
 
+    @action(detail=False, methods=["post"], url_path="save-sources")
+    def save_sources(self, request):
+        from django.db.models import Q
+
+        template_id = request.data.get("template_id")
+        name = " ".join(str(request.data.get("name") or "").split())
+        sources = request.data.get("sources") or []
+
+        if template_id:
+            template = self.get_queryset().filter(pk=template_id).first()
+            if not template:
+                return Response({"detail": "Шаблон не знайдено."}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            if not name:
+                return Response({"detail": "Вкажіть назву шаблону."}, status=status.HTTP_400_BAD_REQUEST)
+            template, _ = ChannelCollectionTemplate.objects.get_or_create(owner=request.user, name=name)
+
+        added = 0
+        skipped = 0
+        for source in sources:
+            source = str(source or "").strip()
+            if not source:
+                continue
+            if source.startswith("http"):
+                url = source
+                username = ""
+                telegram_id = None
+                title = url
+            elif source.lstrip("-").isdigit():
+                telegram_id = int(source)
+                username = ""
+                url = ""
+                title = source
+            else:
+                username = source.lstrip("@")
+                url = f"https://t.me/{username}"
+                telegram_id = None
+                title = f"@{username}"
+
+            q = Q()
+            if url:
+                q |= Q(url=url)
+            if username:
+                q |= Q(username=username)
+            if telegram_id is not None:
+                q |= Q(telegram_id=telegram_id)
+
+            if q and ChannelCollectionItem.objects.filter(owner=request.user, template=template).filter(q).exists():
+                skipped += 1
+                continue
+
+            ChannelCollectionItem.objects.create(
+                owner=request.user,
+                template=template,
+                title=title,
+                username=username,
+                url=url,
+                telegram_id=telegram_id,
+            )
+            added += 1
+
+        template = (
+            ChannelCollectionTemplate.objects.filter(owner=request.user, pk=template.pk)
+            .annotate(item_count=Count("items", distinct=True))
+            .prefetch_related("items")
+            .get()
+        )
+        serializer = self.get_serializer(template)
+        return Response({"template": serializer.data, "added": added, "skipped": skipped})
+
+    @action(detail=False, methods=["post"], url_path="attach-user-results")
+    def attach_user_results(self, request):
+        from apps.comment_parser.models import ParsedCommenter
+        from apps.message_parser.models import ParsedUser
+
+        template_id = request.data.get("template_id")
+        name = " ".join(str(request.data.get("name") or "").split())
+        result_ids = request.data.get("result_ids") or []
+        select_all = bool(request.data.get("select_all"))
+        job_id = request.data.get("job_id")
+        parser_type = request.data.get("parser_type", "comments")
+
+        if template_id:
+            template = self.get_queryset().filter(pk=template_id).first()
+            if not template:
+                return Response({"detail": "Шаблон не знайдено."}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            if not name:
+                return Response({"detail": "Вкажіть назву шаблону."}, status=status.HTTP_400_BAD_REQUEST)
+            template, _ = ChannelCollectionTemplate.objects.get_or_create(owner=request.user, name=name)
+
+        Model = ParsedCommenter if parser_type == "comments" else ParsedUser
+        results = Model.objects.filter(owner=request.user)
+        if job_id:
+            results = results.filter(job_id=job_id)
+        if not select_all:
+            normalized_ids = [int(i) for i in result_ids if str(i).isdigit()]
+            if not normalized_ids:
+                return Response({"detail": "Оберіть хоча б один результат."}, status=status.HTTP_400_BAD_REQUEST)
+            results = results.filter(id__in=normalized_ids)
+
+        results = list(results)
+        if not results:
+            return Response({"detail": "Немає результатів для додавання."}, status=status.HTTP_400_BAD_REQUEST)
+
+        added = 0
+        skipped = 0
+        for result in results:
+            username = result.username or ""
+            url = result.profile_url or ""
+            title = result.full_name or (f"@{username}" if username else str(result.telegram_user_id or ""))
+
+            q = Q()
+            if username:
+                q |= Q(username=username)
+            if url:
+                q |= Q(url=url)
+            if q and ChannelCollectionItem.objects.filter(owner=request.user, template=template).filter(q).exists():
+                skipped += 1
+                continue
+
+            ChannelCollectionItem.objects.create(
+                owner=request.user,
+                template=template,
+                title=title,
+                username=username,
+                url=url,
+            )
+            added += 1
+
+        template = (
+            ChannelCollectionTemplate.objects.filter(owner=request.user, pk=template.pk)
+            .annotate(item_count=Count("items", distinct=True))
+            .prefetch_related("items")
+            .get()
+        )
+        serializer = self.get_serializer(template)
+        return Response({"template": serializer.data, "added": added, "skipped": skipped})
+
     @action(detail=False, methods=["post"], url_path="attach-results")
     def attach_results(self, request):
         template_id = request.data.get("template_id")

@@ -4,6 +4,7 @@ import re
 
 from rest_framework import serializers
 
+from apps.channel_parser.serializers import ChannelCollectionTemplateSerializer
 from apps.comment_parser.models import CommentParserJob, CommentParserLog, ParsedCommenter
 from apps.telegram_accounts.models import TelegramAccount
 from apps.telegram_accounts.serializers import TelegramAccountSerializer
@@ -173,4 +174,5 @@ class CommentParserOverviewSerializer(serializers.Serializer):
     results = ParsedCommenterSerializer(many=True)
     logs = CommentParserLogSerializer(many=True)
     accounts = TelegramAccountSerializer(many=True)
+    channel_templates = ChannelCollectionTemplateSerializer(many=True)
     templates = serializers.DictField(child=serializers.ListField(child=serializers.CharField()))
