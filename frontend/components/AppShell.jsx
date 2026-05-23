@@ -24,6 +24,7 @@ const PAGE_TITLE = {
   "/parser/history":  "Історія парсингу",
   "/warmup":          "Прогрів акаунтів",
   "/reactions":       "Масові реакції",
+  "/neuro-commenting": "Нейрокоментинг",
 };
 
 export default function AppShell({ children, userLabel }) {
@@ -66,7 +67,9 @@ export default function AppShell({ children, userLabel }) {
         </nav>
 
         <div className="nav-section">Модулі</div>
-        <div className="nav-item disabled"><span className="nav-icon">✎</span>Нейрокоментинг</div>
+        <Link href="/neuro-commenting" className={`nav-item${pathname === "/neuro-commenting" ? " active" : ""}`}>
+          <span className="nav-icon">✎</span>Нейрокоментинг
+        </Link>
         <Link href="/reactions" className={`nav-item${pathname === "/reactions" ? " active" : ""}`}>
           <span className="nav-icon">◌</span>Масові реакції
         </Link>

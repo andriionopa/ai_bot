@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     "apps.message_parser",
     "apps.comment_parser",
     "apps.reaction_bot",
+    "apps.neuro_commenting",
     "apps.realtime",
 ]
 
