@@ -412,15 +412,19 @@ export default function NeuroCommentingPage() {
               </div>
               <div style={{ padding: 18 }}>
                 <div style={{ marginBottom: 10, fontSize: 13, color: "var(--text-muted)" }}>
-                  @username або https://t.me/channel_name — кожен з нового рядка
+                  @username, https://t.me/channel_name або папка https://t.me/addlist/&lt;slug&gt; — кожен запис з нового рядка
                 </div>
                 <textarea
                   value={sourcesText}
                   onChange={e => setSourcesText(e.target.value)}
-                  placeholder={"@channel1\nhttps://t.me/channel2\n@channel3"}
+                  placeholder={"@channel1\nhttps://t.me/channel2\nhttps://t.me/addlist/AbCdEfGh"}
                   rows={6}
                   style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", resize: "vertical", fontFamily: "monospace", fontSize: 13 }}
                 />
+                <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                  Папку Telegram (t.me/addlist/…) безпечніше додавати замість 50 окремих каналів — це один join-виклик замість десятків,
+                  що різко знижує ризик flood-wait. Для приватних каналів додавайте 5–15 на день.
+                </div>
               </div>
             </div>
 

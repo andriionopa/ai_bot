@@ -12,6 +12,7 @@ from celery.result import AsyncResult
 from django.conf import settings
 from django.db.models import F
 from django.utils import timezone
+from pyrogram import raw
 from pyrogram.errors import (
     AuthKeyUnregistered,
     ChatWriteForbidden,
@@ -209,8 +210,8 @@ def _typing_seconds(text: str) -> float:
     return min(TYPING_MAX_SECONDS, max(TYPING_MIN_SECONDS, raw))
 
 
-def _normalize_source(raw: str) -> str:
-    value = str(raw or "").strip()
+def _normalize_source(raw_value: str) -> str:
+    value = str(raw_value or "").strip()
     if not value:
         return ""
     if value.lstrip("-").isdigit():
@@ -218,7 +219,187 @@ def _normalize_source(raw: str) -> str:
     value = re.sub(r"^https?://t\.me/", "", value, flags=re.IGNORECASE)
     value = re.sub(r"^t\.me/", "", value, flags=re.IGNORECASE)
     value = value.lstrip("@").split("?")[0].split("/")[0].strip()
-    return value or raw
+    return value or raw_value
+
+
+def _is_addlist_source(value: str) -> bool:
+    return "addlist/" in str(value or "")
+
+
+def _extract_addlist_slug(value: str) -> str:
+    """Extract the slug from a t.me/addlist/<slug> link."""
+    match = re.search(r"(?:https?://)?t\.me/addlist/([A-Za-z0-9_\-]+)", str(value or ""))
+    if not match:
+        raise RuntimeError("Некоректне посилання addlist. Очікується формат https://t.me/addlist/...")
+    return match.group(1)
+
+
+def _peer_username_or_id(peer, *, chats_by_id: dict[int, object]) -> str:
+    """Convert a chatlist peer into something _normalize_source can later resolve."""
+    if isinstance(peer, raw.types.PeerChannel):
+        chat = chats_by_id.get(peer.channel_id)
+        username = (
+            getattr(chat, "username", "")
+            or (getattr(chat, "usernames", []) and getattr(chat.usernames[0], "username", ""))
+            or ""
+        )
+        if username:
+            return f"@{username}"
+        # private/no-username channel — fall back to the bare channel_id; Pyrogram expects
+        # the -100... form for raw channel ids.
+        return f"-100{peer.channel_id}"
+    if isinstance(peer, raw.types.PeerChat):
+        return f"-{peer.chat_id}"
+    return ""
+
+
+async def _resolve_and_join_addlist(app, source: str) -> tuple[list[str], dict]:
+    """For a single t.me/addlist/<slug> source, run CheckChatlistInvite + JoinChatlistInvite
+    on the given client. Returns (resolved_source_refs, info_dict). Idempotent — if the
+    account already joined the folder, no new join is performed but peers are still returned."""
+    slug = _extract_addlist_slug(source)
+    invite = await app.invoke(raw.functions.chatlists.CheckChatlistInvite(slug=slug))
+    chats_by_id = {getattr(chat, "id", None): chat for chat in (getattr(invite, "chats", []) or [])}
+
+    new_peers = list(getattr(invite, "peers", []) or [])
+    missing_peers = list(getattr(invite, "missing_peers", []) or [])
+    already_peers = list(getattr(invite, "already_peers", []) or [])
+
+    # Collect every peer we can identify so the bot can comment in them regardless of
+    # whether this account already had them in its dialogs.
+    seen_keys = set()
+    all_peers = []
+    for bucket in (new_peers, missing_peers, already_peers):
+        for peer in bucket:
+            key = None
+            if isinstance(peer, raw.types.PeerChannel):
+                key = ("channel", peer.channel_id)
+            elif isinstance(peer, raw.types.PeerChat):
+                key = ("chat", peer.chat_id)
+            if key is None or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            all_peers.append(peer)
+
+    refs: list[str] = []
+    for peer in all_peers:
+        ref = _peer_username_or_id(peer, chats_by_id=chats_by_id)
+        if ref:
+            refs.append(ref)
+
+    joined_count = 0
+    # Issue JoinChatlistInvite only if the folder has not been accepted yet AND there are
+    # peers we can actually pass (need access_hash for channels/users).
+    if new_peers or missing_peers:
+        input_peers = []
+        for peer in (*new_peers, *missing_peers):
+            if isinstance(peer, raw.types.PeerChannel):
+                chat = chats_by_id.get(peer.channel_id)
+                access_hash = getattr(chat, "access_hash", None)
+                if access_hash is None:
+                    continue
+                input_peers.append(
+                    raw.types.InputPeerChannel(channel_id=peer.channel_id, access_hash=access_hash)
+                )
+            elif isinstance(peer, raw.types.PeerChat):
+                input_peers.append(raw.types.InputPeerChat(chat_id=peer.chat_id))
+        if input_peers:
+            await app.invoke(
+                raw.functions.chatlists.JoinChatlistInvite(slug=slug, peers=input_peers)
+            )
+            joined_count = len(input_peers)
+
+    return refs, {
+        "slug": slug,
+        "folder_title": getattr(invite, "title", "") or "",
+        "joined_count": joined_count,
+        "already_count": len(already_peers),
+        "total_channels": len(refs),
+    }
+
+
+def _resolve_folder_sources(
+    job: NeuroCommentJob,
+    accounts: list[TelegramAccount],
+    addlist_sources: list[str],
+) -> list[str]:
+    """For each addlist link, ask the first reachable account to resolve it (one network
+    round-trip) and try to join the folder from every other account so they can comment
+    inside the folder's channels. Returns the de-duplicated list of resolved channel
+    references that should be merged into job.sources."""
+    resolved: list[str] = []
+    for source in addlist_sources:
+        first_resolved_refs: list[str] | None = None
+        for account in accounts:
+            if get_account_runtime_block_reason(account):
+                continue
+            try:
+                refs, info = run_client_operation(
+                    account, lambda app, s=source: _resolve_and_join_addlist(app, s)
+                )
+            except FloodWait as exc:
+                _handle_account_exception(job, account, exc)
+                continue
+            except (RPCError, RuntimeError) as exc:
+                _log(
+                    job,
+                    level=NeuroCommentLog.Level.WARNING,
+                    account=account,
+                    message=f"{account.label}: не вдалося обробити папку {source}: {exc}",
+                )
+                continue
+            except Exception as exc:
+                _log(
+                    job,
+                    level=NeuroCommentLog.Level.WARNING,
+                    account=account,
+                    message=f"{account.label}: помилка папки {source}: {exc}",
+                )
+                continue
+
+            if first_resolved_refs is None:
+                first_resolved_refs = refs
+                _log(
+                    job,
+                    level=NeuroCommentLog.Level.INFO,
+                    account=account,
+                    message=(
+                        f"{account.label}: папка «{info.get('folder_title') or '?'}» — "
+                        f"{info.get('total_channels', 0)} каналів, "
+                        f"приєднано {info.get('joined_count', 0)}, вже у папці {info.get('already_count', 0)}"
+                    ),
+                    metadata={"addlist_slug": info.get("slug"), **info},
+                )
+            else:
+                # subsequent accounts: just log the join action without re-resolving
+                _log(
+                    job,
+                    level=NeuroCommentLog.Level.INFO,
+                    account=account,
+                    message=(
+                        f"{account.label}: приєднано до папки «{info.get('folder_title') or '?'}» "
+                        f"(нових: {info.get('joined_count', 0)})"
+                    ),
+                )
+        if first_resolved_refs is None:
+            _log(
+                job,
+                level=NeuroCommentLog.Level.WARNING,
+                message=f"Папку {source} не вдалося розгорнути жодним акаунтом — пропускаємо",
+            )
+            continue
+        resolved.extend(first_resolved_refs)
+
+    # de-duplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for ref in resolved:
+        key = ref.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(ref)
+    return unique
 
 
 def _call_ai(
@@ -1048,9 +1229,34 @@ def run_neuro_comment_job(job_id: int) -> NeuroCommentJob:
     if not accounts:
         raise RuntimeError("Немає валідних акаунтів для коментування.")
 
-    sources = [str(s).strip() for s in (job.sources or []) if str(s).strip()]
-    if not sources:
+    raw_sources = [str(s).strip() for s in (job.sources or []) if str(s).strip()]
+    if not raw_sources:
         raise RuntimeError("Немає джерел (каналів) для коментування.")
+
+    # Split direct channels from t.me/addlist folder links. Folders are imported via one
+    # CheckChatlistInvite + JoinChatlistInvite call per account, which Telegram registers
+    # as a single "accepted the folder" action — far safer than N individual joins.
+    direct_sources = [s for s in raw_sources if not _is_addlist_source(s)]
+    addlist_sources = [s for s in raw_sources if _is_addlist_source(s)]
+
+    if addlist_sources:
+        _log(
+            job,
+            level=NeuroCommentLog.Level.INFO,
+            message=f"Виявлено папок addlist: {len(addlist_sources)} — розгортаю...",
+        )
+        resolved_from_folders = _resolve_folder_sources(job, accounts, addlist_sources)
+        # merge while keeping direct sources first so the user's explicit list wins ordering
+        seen: set[str] = {s.lower() for s in direct_sources}
+        for ref in resolved_from_folders:
+            if ref.lower() in seen:
+                continue
+            seen.add(ref.lower())
+            direct_sources.append(ref)
+
+    sources = direct_sources
+    if not sources:
+        raise RuntimeError("Після обробки папок не лишилось каналів для коментування.")
 
     prompts = list(job.selected_prompts.all())
     comment_counter: list[int] = [0]
