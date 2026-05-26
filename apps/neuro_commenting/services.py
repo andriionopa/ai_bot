@@ -140,10 +140,30 @@ AI_PROTECTION_POST_AGE_FLOOR = (60.0, 300.0)  # min seconds since message.date b
 AI_PROTECTION_SKIP_PROBABILITY = 0.10  # 10% posts dropped to avoid 100% coverage signature
 AI_PROTECTION_READ_HISTORY_PROB = 0.6  # chance to scroll/read before commenting
 AI_PROTECTION_SCROLL_DEPTH = (5, 20)
-AI_PROTECTION_QUIET_HOURS = (2, 7)  # local-tz quiet window [start, end)
+AI_PROTECTION_QUIET_HOURS = (1, 7)  # local-tz quiet window [start, end) — matches GramGPT conservative
 AI_PROTECTION_BURST_WINDOW_MIN = 60  # rolling window length in minutes
 AI_PROTECTION_BURST_LIMIT = 15  # max comments per account inside the window
 AI_PROTECTION_BURST_COOLDOWN = (1200, 2400)  # 20–40 min cooldown
+# Realistic human typing is 90–150 chars/min; bot bursts at 1500+ trip antispam classifiers.
+AI_PROTECTION_TYPING_CPM = (90, 150)
+AI_PROTECTION_TYPO_PROBABILITY = 0.05  # 5% of comments are sent with a typo, then edited
+AI_PROTECTION_TYPO_EDIT_DELAY = (3.0, 8.0)
+AI_PROTECTION_PROFILE_VIEW_PROB = 0.30  # 30% chance to look at the post author before commenting
+AI_PROTECTION_SELF_DELETE_PROBABILITY = 0.02  # 2% of own comments are deleted later
+AI_PROTECTION_SELF_DELETE_DELAY = (60.0, 300.0)
+
+# Keyboard adjacency for _inject_typo. Covers QWERTY + ЙЦУКЕН neighbours — good enough
+# for a believable single-key slip.
+_KEYBOARD_NEIGHBORS = {
+    "q": "wa", "w": "qeas", "e": "wrds", "r": "etdf", "t": "ryfg", "y": "tugh", "u": "yihj",
+    "i": "uojk", "o": "ipkl", "p": "ol", "a": "qwsz", "s": "awedxz", "d": "sefcx",
+    "f": "drtgvc", "g": "ftyhbv", "h": "gyujnb", "j": "huiknm", "k": "jiolm", "l": "kop",
+    "z": "asx", "x": "zsdc", "c": "xdfv", "v": "cfgb", "b": "vghn", "n": "bhjm", "m": "njk",
+    "й": "цф", "ц": "йук", "у": "цкв", "к": "уеа", "е": "кнг", "н": "егш", "г": "ншщ",
+    "ш": "гщз", "щ": "шзх", "з": "щхї", "х": "зї", "ї": "зхж", "ф": "йві", "і": "віф",
+    "в": "уаіп", "а": "впр", "п": "арс", "р": "псм", "с": "рмі", "м": "сіт", "т": "мь",
+    "ь": "тб", "б": "ьюя", "ю": "бя", "я": "юч", "ч": "яс",
+}
 
 
 def _effective_delays(job: NeuroCommentJob) -> tuple[float, float, float, float]:
@@ -203,11 +223,85 @@ async_account_recent_comment_count = sync_to_async(_account_recent_comment_count
 async_post_already_commented = sync_to_async(_post_already_commented, thread_sensitive=True)
 
 
-def _typing_seconds(text: str) -> float:
+def _typing_seconds(text: str, *, ai_protection: bool = False) -> float:
+    """Estimate believable time-to-type. With ai_protection on, sample a realistic
+    chars/minute rate from AI_PROTECTION_TYPING_CPM; otherwise fall back to the fast
+    constant (used pre-AI-protection so we don't break anything)."""
     if not text:
         return TYPING_MIN_SECONDS
+    if ai_protection:
+        cpm = random.uniform(*AI_PROTECTION_TYPING_CPM)
+        chars_per_second = max(0.5, cpm / 60.0)
+        raw = len(text) / chars_per_second
+        # cap so a 500-char post doesn't make us wait six minutes
+        return min(60.0, max(TYPING_MIN_SECONDS, raw))
     raw = len(text) / TYPING_CHARS_PER_SECOND
     return min(TYPING_MAX_SECONDS, max(TYPING_MIN_SECONDS, raw))
+
+
+def _inject_typo(text: str) -> str:
+    """Swap one alphabetic character for a keyboard-adjacent one. Returns the input
+    unchanged if no candidate position is found."""
+    if not text or len(text) < 5:
+        return text
+    candidates = [
+        (idx, ch) for idx, ch in enumerate(text)
+        if ch.lower() in _KEYBOARD_NEIGHBORS
+    ]
+    if not candidates:
+        return text
+    idx, ch = random.choice(candidates)
+    neighbour = random.choice(_KEYBOARD_NEIGHBORS[ch.lower()])
+    if ch.isupper():
+        neighbour = neighbour.upper()
+    return text[:idx] + neighbour + text[idx + 1:]
+
+
+async def _view_post_author(app, message, chat) -> bool:
+    """Generate `users.getFullUser`/`channels.getFullChannel` telemetry — makes the
+    comment look like it followed a profile click. Best-effort; never raises."""
+    try:
+        from_user = getattr(message, "from_user", None)
+        if from_user is not None and getattr(from_user, "id", None):
+            await app.get_users(from_user.id)
+            return True
+        sender_chat = getattr(message, "sender_chat", None)
+        if sender_chat is not None and getattr(sender_chat, "id", None):
+            await app.get_chat(sender_chat.id)
+            return True
+        # fallback: skim a few chat members
+        async for _ in app.get_chat_members(chat.id, limit=random.randint(3, 8)):
+            pass
+        return True
+    except Exception:
+        return False
+
+
+async def _maybe_self_delete(
+    app,
+    chat_id,
+    message_id,
+    job: NeuroCommentJob,
+    account: TelegramAccount,
+    channel_username: str,
+) -> None:
+    """Sleep a believable amount then delete the message. Blocks this worker — that is
+    intentional: it simply extends the natural gap until the account's next action."""
+    delay = random.uniform(*AI_PROTECTION_SELF_DELETE_DELAY)
+    completed = await _interruptible_wait_async(job.id, delay)
+    if not completed:
+        return
+    try:
+        await app.delete_messages(chat_id, message_id)
+        await async_log(
+            job,
+            level=NeuroCommentLog.Level.INFO,
+            account=account,
+            channel=channel_username,
+            message=f"{account.label}: self-delete коментаря #{message_id} (AI-захист)",
+        )
+    except Exception:
+        pass
 
 
 def _normalize_source(raw_value: str) -> str:
@@ -614,6 +708,24 @@ async def _comment_on_post(
     if not comment_text:
         comment_text = "Цікаво!"
 
+    # ai_protection: peek at the author's profile before commenting — produces realistic
+    # `users.getFullUser` telemetry so the comment doesn't look like a context-free bot post.
+    if job.ai_protection and random.random() < AI_PROTECTION_PROFILE_VIEW_PROB:
+        await _view_post_author(app, message, chat)
+
+    # ai_protection: occasional typo-then-edit pattern. Only meaningful in the regular
+    # path (the first_message_strategy is already an edit-based flow).
+    use_typo = (
+        job.ai_protection
+        and not job.first_message_strategy
+        and random.random() < AI_PROTECTION_TYPO_PROBABILITY
+    )
+    typo_text = _inject_typo(comment_text) if use_typo else comment_text
+    if use_typo and typo_text == comment_text:
+        # no candidate slot to mangle — skip the typo path
+        use_typo = False
+
+    sent_id: int | None = None
     try:
         if job.first_message_strategy and job.first_message_text:
             await _send_typing(app, chat.id)
@@ -622,6 +734,7 @@ async def _comment_on_post(
             sent = await app.send_message(
                 chat.id, job.first_message_text, reply_to_message_id=message.id
             )
+            sent_id = sent.id
             edit_delay = max(5, job.first_message_edit_delay)
             completed = await _interruptible_wait_async(job.id, edit_delay)
             if not completed:
@@ -632,7 +745,9 @@ async def _comment_on_post(
                     pass
                 return False
             await _send_typing(app, chat.id)
-            await _interruptible_wait_async(job.id, _typing_seconds(comment_text))
+            await _interruptible_wait_async(
+                job.id, _typing_seconds(comment_text, ai_protection=job.ai_protection)
+            )
             try:
                 await sent.edit_text(comment_text)
             except Exception as edit_exc:
@@ -651,10 +766,31 @@ async def _comment_on_post(
                     ),
                 )
                 return False
+        elif use_typo:
+            await _send_typing(app, chat.id)
+            await _interruptible_wait_async(
+                job.id, _typing_seconds(typo_text, ai_protection=True)
+            )
+            sent = await app.send_message(
+                chat.id, typo_text, reply_to_message_id=message.id
+            )
+            sent_id = sent.id
+            await _interruptible_wait_async(
+                job.id, random.uniform(*AI_PROTECTION_TYPO_EDIT_DELAY)
+            )
+            try:
+                await sent.edit_text(comment_text)
+            except Exception:
+                # if the edit fails the typo stays — humans don't always notice their own
+                # mistakes either, so we still count this as a successful comment.
+                pass
         else:
             await _send_typing(app, chat.id)
-            await _interruptible_wait_async(job.id, _typing_seconds(comment_text))
-            await app.send_message(chat.id, comment_text, reply_to_message_id=message.id)
+            await _interruptible_wait_async(
+                job.id, _typing_seconds(comment_text, ai_protection=job.ai_protection)
+            )
+            sent = await app.send_message(chat.id, comment_text, reply_to_message_id=message.id)
+            sent_id = getattr(sent, "id", None)
 
         new_total = await async_increment_comments_sent(job.id)
         comment_counter[0] = new_total
@@ -669,6 +805,17 @@ async def _comment_on_post(
             message=f"{account.label}: коментар у «{channel_title}» #{message.id}",
             metadata={"channel": channel_username, "message_id": message.id, "prompt": prompt_name},
         )
+        # ai_protection: occasional self-delete makes the farm look more like real users
+        # who post and reconsider. Blocks this worker for 1–5 min, which is also a
+        # natural rate-limit gap before the next action.
+        if (
+            sent_id is not None
+            and job.ai_protection
+            and random.random() < AI_PROTECTION_SELF_DELETE_PROBABILITY
+        ):
+            await _maybe_self_delete(
+                app, chat.id, sent_id, job, account, channel_username
+            )
         return True
     except FloodWait:
         raise
