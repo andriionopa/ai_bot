@@ -33,6 +33,7 @@ const defaultForm = {
   entry_delay_min: 84,
   entry_delay_max: 156,
   ai_protection: true,
+  protection_mode: "balanced",
 };
 
 function Toggle({ checked, onChange, label, note }) {
@@ -275,6 +276,7 @@ export default function NeuroCommentingPage() {
       entry_delay_min: job.entry_delay_min,
       entry_delay_max: job.entry_delay_max,
       ai_protection: job.ai_protection,
+      protection_mode: job.protection_mode || "balanced",
     });
     setSourcesText((job.sources || []).join("\n"));
     setKeywordsText((job.keywords || []).join("\n"));
@@ -639,7 +641,26 @@ export default function NeuroCommentingPage() {
                 {/* AI protection */}
                 <div style={{ marginTop: 14 }}>
                   <Toggle checked={form.ai_protection} onChange={v => setField("ai_protection", v)}
-                    label="AI захист від блокувань" note="Збільшує затримки для безпечної роботи" />
+                    label="AI захист від блокувань" note="Симулює людську поведінку (затримки, друк, перегляд профілів, опечатки)" />
+                  {form.ai_protection && (
+                    <div style={{ marginTop: 10, paddingLeft: 28 }}>
+                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Режим</div>
+                      <select
+                        value={form.protection_mode}
+                        onChange={e => setField("protection_mode", e.target.value)}
+                        style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", fontSize: 13 }}
+                      >
+                        <option value="safe">🛡 Консервативний — макс. безпека, повільно</option>
+                        <option value="balanced">⚖ Збалансований — оптимально (рекомендовано)</option>
+                        <option value="fast">⚡ Агресивний — швидко, мінімальний захист</option>
+                      </select>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.4 }}>
+                        {form.protection_mode === "safe" && "x1.5 затримки · набір 40-60 cpm · сон 01:00-07:00 · перегляд профілів 90% · опечатки 8%"}
+                        {form.protection_mode === "balanced" && "x1.0 затримки · набір 100-150 cpm · сон 02:00-07:00 · перегляд 70% · опечатки 5%"}
+                        {form.protection_mode === "fast" && "x0.7 затримки · набір вимкнено · без сну · перегляд 30% · опечатки 2%"}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

@@ -56,7 +56,7 @@ class NeuroCommentJobSerializer(serializers.ModelSerializer):
             "account_rotation", "rotation_every_n",
             "comment_delay_min", "comment_delay_max",
             "entry_delay_min", "entry_delay_max",
-            "ai_protection",
+            "ai_protection", "protection_mode",
             "comments_sent", "status", "error",
             "started_at", "finished_at", "created_at", "updated_at",
             "log_count",

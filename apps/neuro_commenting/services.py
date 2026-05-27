@@ -132,25 +132,82 @@ def _random_delay(min_s: float, max_s: float) -> float:
     return random.uniform(min_s, max_s) if max_s > 0 else 0.0
 
 
-# ai_protection: when True, layered safe behaviour overrides user-defined timing.
-# Matches the pattern in reaction_bot/comment_parser/channel_parser, plus extra Telegram-specific guards.
-AI_PROTECTION_COMMENT_DELAY = (60.0, 180.0)
-AI_PROTECTION_ENTRY_DELAY = (90.0, 240.0)
-AI_PROTECTION_POST_AGE_FLOOR = (60.0, 300.0)  # min seconds since message.date before commenting
-AI_PROTECTION_SKIP_PROBABILITY = 0.10  # 10% posts dropped to avoid 100% coverage signature
-AI_PROTECTION_READ_HISTORY_PROB = 0.6  # chance to scroll/read before commenting
-AI_PROTECTION_SCROLL_DEPTH = (5, 20)
-AI_PROTECTION_QUIET_HOURS = (1, 7)  # local-tz quiet window [start, end) — matches GramGPT conservative
+# ai_protection: three intensity profiles modelled on the GramGPT blog numbers.
+# When ai_protection=True, the profile selected by job.protection_mode overrides
+# user-defined timing and dictates the behavioural patterns (typos, profile views,
+# self-delete, quiet hours, typing speed). When False, none of this kicks in.
+#
+# - delay_multiplier   : multiplies the safe base ranges (smaller = faster, riskier)
+# - comment_delay      : (min, max) seconds between consecutive comments (pre-multiplier)
+# - entry_delay        : (min, max) seconds before first action in a new channel
+# - post_age_floor     : minimum age of a post before we comment on it
+# - skip_probability   : chance to drop a candidate post even if it matched filters
+# - read_history_prob  : chance to scroll history before commenting
+# - typing_cpm         : (min, max) chars-per-minute for typing simulation; None → off
+# - typo_prob          : chance to ship a typo then edit
+# - profile_view_prob  : chance to peek at the post author profile before commenting
+# - self_delete_prob   : chance to delete our own comment after some delay
+# - quiet_hours        : (start, end) local-tz hours when monitoring is paused; None → off
+# - scroll_depth       : (min, max) messages to read when scrolling
+AI_PROTECTION_PROFILES: dict[str, dict[str, object]] = {
+    "safe": {
+        "delay_multiplier": 1.5,
+        "comment_delay": (60.0, 180.0),
+        "entry_delay": (90.0, 240.0),
+        "post_age_floor": (90.0, 420.0),
+        "skip_probability": 0.15,
+        "read_history_prob": 0.50,
+        "typing_cpm": (40, 60),
+        "typo_prob": 0.08,
+        "profile_view_prob": 0.90,
+        "self_delete_prob": 0.03,
+        "quiet_hours": (1, 7),
+        "scroll_depth": (10, 30),
+    },
+    "balanced": {
+        "delay_multiplier": 1.0,
+        "comment_delay": (60.0, 180.0),
+        "entry_delay": (90.0, 240.0),
+        "post_age_floor": (60.0, 300.0),
+        "skip_probability": 0.10,
+        "read_history_prob": 0.30,
+        "typing_cpm": (100, 150),
+        "typo_prob": 0.05,
+        "profile_view_prob": 0.70,
+        "self_delete_prob": 0.02,
+        "quiet_hours": (2, 7),
+        "scroll_depth": (5, 20),
+    },
+    "fast": {
+        "delay_multiplier": 0.7,
+        "comment_delay": (60.0, 180.0),
+        "entry_delay": (90.0, 240.0),
+        "post_age_floor": (30.0, 120.0),
+        "skip_probability": 0.05,
+        "read_history_prob": 0.00,
+        "typing_cpm": None,  # no typing simulation in aggressive mode
+        "typo_prob": 0.02,
+        "profile_view_prob": 0.30,
+        "self_delete_prob": 0.01,
+        "quiet_hours": None,
+        "scroll_depth": (5, 10),
+    },
+}
+
+# Shared (non-profile) constants
 AI_PROTECTION_BURST_WINDOW_MIN = 60  # rolling window length in minutes
 AI_PROTECTION_BURST_LIMIT = 15  # max comments per account inside the window
-AI_PROTECTION_BURST_COOLDOWN = (1200, 2400)  # 20–40 min cooldown
-# Realistic human typing is 90–150 chars/min; bot bursts at 1500+ trip antispam classifiers.
-AI_PROTECTION_TYPING_CPM = (90, 150)
-AI_PROTECTION_TYPO_PROBABILITY = 0.05  # 5% of comments are sent with a typo, then edited
 AI_PROTECTION_TYPO_EDIT_DELAY = (3.0, 8.0)
-AI_PROTECTION_PROFILE_VIEW_PROB = 0.30  # 30% chance to look at the post author before commenting
-AI_PROTECTION_SELF_DELETE_PROBABILITY = 0.02  # 2% of own comments are deleted later
 AI_PROTECTION_SELF_DELETE_DELAY = (60.0, 300.0)
+
+
+def _protection_params(job: NeuroCommentJob) -> dict[str, object]:
+    """Return the active profile's parameter dict. When ai_protection is off, returns an
+    empty dict — callers must treat absent keys as "feature disabled"."""
+    if not job.ai_protection:
+        return {}
+    mode = getattr(job, "protection_mode", None) or "balanced"
+    return AI_PROTECTION_PROFILES.get(mode, AI_PROTECTION_PROFILES["balanced"])
 
 # Keyboard adjacency for _inject_typo. Covers QWERTY + ЙЦУКЕН neighbours — good enough
 # for a believable single-key slip.
@@ -167,9 +224,14 @@ _KEYBOARD_NEIGHBORS = {
 
 
 def _effective_delays(job: NeuroCommentJob) -> tuple[float, float, float, float]:
-    """Returns (comment_min, comment_max, entry_min, entry_max). ai_protection forces safe ranges."""
-    if job.ai_protection:
-        return (*AI_PROTECTION_COMMENT_DELAY, *AI_PROTECTION_ENTRY_DELAY)
+    """Returns (comment_min, comment_max, entry_min, entry_max). When ai_protection is on
+    the active profile dictates the base range; delay_multiplier scales it."""
+    params = _protection_params(job)
+    if params:
+        cmin, cmax = params["comment_delay"]  # type: ignore[index]
+        emin, emax = params["entry_delay"]  # type: ignore[index]
+        mult = float(params.get("delay_multiplier", 1.0))
+        return cmin * mult, cmax * mult, emin * mult, emax * mult
     return (
         job.comment_delay_min,
         job.comment_delay_max,
@@ -178,9 +240,17 @@ def _effective_delays(job: NeuroCommentJob) -> tuple[float, float, float, float]
     )
 
 
-def _in_quiet_hours(now: datetime | None = None) -> bool:
+def _quiet_hours(job: NeuroCommentJob) -> tuple[int, int] | None:
+    params = _protection_params(job)
+    return params.get("quiet_hours") if params else None  # type: ignore[return-value]
+
+
+def _in_quiet_hours(job: NeuroCommentJob, now: datetime | None = None) -> bool:
+    window = _quiet_hours(job)
+    if window is None:
+        return False
     now = now or timezone.localtime()
-    start, end = AI_PROTECTION_QUIET_HOURS
+    start, end = window
     return start <= now.hour < end
 
 
@@ -223,17 +293,21 @@ async_account_recent_comment_count = sync_to_async(_account_recent_comment_count
 async_post_already_commented = sync_to_async(_post_already_commented, thread_sensitive=True)
 
 
-def _typing_seconds(text: str, *, ai_protection: bool = False) -> float:
-    """Estimate believable time-to-type. With ai_protection on, sample a realistic
-    chars/minute rate from AI_PROTECTION_TYPING_CPM; otherwise fall back to the fast
-    constant (used pre-AI-protection so we don't break anything)."""
+def _typing_seconds(text: str, job: NeuroCommentJob | None = None) -> float:
+    """Estimate believable time-to-type. Reads the active ai_protection profile to pick
+    a chars/minute rate. If the profile is off, or the active mode disables typing
+    (FAST has typing_cpm=None), falls back to the legacy fast constant."""
     if not text:
         return TYPING_MIN_SECONDS
-    if ai_protection:
-        cpm = random.uniform(*AI_PROTECTION_TYPING_CPM)
+    cpm_range = None
+    if job is not None:
+        params = _protection_params(job)
+        cpm_range = params.get("typing_cpm") if params else None
+    if cpm_range:
+        cpm = random.uniform(*cpm_range)
         chars_per_second = max(0.5, cpm / 60.0)
         raw = len(text) / chars_per_second
-        # cap so a 500-char post doesn't make us wait six minutes
+        # cap so a long post doesn't keep us "typing" for minutes
         return min(60.0, max(TYPING_MIN_SECONDS, raw))
     raw = len(text) / TYPING_CHARS_PER_SECOND
     return min(TYPING_MAX_SECONDS, max(TYPING_MIN_SECONDS, raw))
@@ -598,7 +672,9 @@ def _should_comment(job: NeuroCommentJob, post_text: str) -> bool:
         return False
     # ai_protection: drop a fraction of posts even in ALL/keyword modes so we don't
     # produce a 100%-coverage signature that admins can spot.
-    if job.ai_protection and random.random() < AI_PROTECTION_SKIP_PROBABILITY:
+    params = _protection_params(job)
+    skip_prob = float(params.get("skip_probability", 0.0)) if params else 0.0
+    if skip_prob and random.random() < skip_prob:
         return False
     return True
 
@@ -668,10 +744,12 @@ async def _comment_on_post(
     ):
         return False
 
+    params = _protection_params(job)
+
     # ai_protection: enforce a minimum age for the post — humans don't comment 3s
     # after publication. Wait out the floor with an interruptible sleep.
-    if job.ai_protection:
-        floor_min, floor_max = AI_PROTECTION_POST_AGE_FLOOR
+    if params.get("post_age_floor"):
+        floor_min, floor_max = params["post_age_floor"]  # type: ignore[index]
         required_age = random.uniform(floor_min, floor_max)
         age = _message_age_seconds(message)
         if age < required_age:
@@ -689,16 +767,17 @@ async def _comment_on_post(
 
     # ai_protection: produce realistic readHistory telemetry before sending —
     # mark the post as read, optionally scroll through nearby history.
-    if job.ai_protection and random.random() < AI_PROTECTION_READ_HISTORY_PROB:
+    read_prob = float(params.get("read_history_prob", 0.0)) if params else 0.0
+    if read_prob and random.random() < read_prob:
         try:
             await app.read_chat_history(chat.id, message.id)
         except Exception:
             pass
         try:
-            depth = random.randint(*AI_PROTECTION_SCROLL_DEPTH)
-            scrolled = 0
+            scroll_range = params.get("scroll_depth") or (5, 10)
+            depth = random.randint(*scroll_range)  # type: ignore[arg-type]
             async for _ in app.get_chat_history(chat.id, limit=depth):
-                scrolled += 1
+                pass
         except Exception:
             pass
 
@@ -710,15 +789,17 @@ async def _comment_on_post(
 
     # ai_protection: peek at the author's profile before commenting — produces realistic
     # `users.getFullUser` telemetry so the comment doesn't look like a context-free bot post.
-    if job.ai_protection and random.random() < AI_PROTECTION_PROFILE_VIEW_PROB:
+    profile_prob = float(params.get("profile_view_prob", 0.0)) if params else 0.0
+    if profile_prob and random.random() < profile_prob:
         await _view_post_author(app, message, chat)
 
     # ai_protection: occasional typo-then-edit pattern. Only meaningful in the regular
     # path (the first_message_strategy is already an edit-based flow).
+    typo_prob = float(params.get("typo_prob", 0.0)) if params else 0.0
     use_typo = (
-        job.ai_protection
+        typo_prob > 0
         and not job.first_message_strategy
-        and random.random() < AI_PROTECTION_TYPO_PROBABILITY
+        and random.random() < typo_prob
     )
     typo_text = _inject_typo(comment_text) if use_typo else comment_text
     if use_typo and typo_text == comment_text:
@@ -746,7 +827,7 @@ async def _comment_on_post(
                 return False
             await _send_typing(app, chat.id)
             await _interruptible_wait_async(
-                job.id, _typing_seconds(comment_text, ai_protection=job.ai_protection)
+                job.id, _typing_seconds(comment_text, job)
             )
             try:
                 await sent.edit_text(comment_text)
@@ -769,7 +850,7 @@ async def _comment_on_post(
         elif use_typo:
             await _send_typing(app, chat.id)
             await _interruptible_wait_async(
-                job.id, _typing_seconds(typo_text, ai_protection=True)
+                job.id, _typing_seconds(typo_text, job)
             )
             sent = await app.send_message(
                 chat.id, typo_text, reply_to_message_id=message.id
@@ -787,7 +868,7 @@ async def _comment_on_post(
         else:
             await _send_typing(app, chat.id)
             await _interruptible_wait_async(
-                job.id, _typing_seconds(comment_text, ai_protection=job.ai_protection)
+                job.id, _typing_seconds(comment_text, job)
             )
             sent = await app.send_message(chat.id, comment_text, reply_to_message_id=message.id)
             sent_id = getattr(sent, "id", None)
@@ -808,11 +889,8 @@ async def _comment_on_post(
         # ai_protection: occasional self-delete makes the farm look more like real users
         # who post and reconsider. Blocks this worker for 1–5 min, which is also a
         # natural rate-limit gap before the next action.
-        if (
-            sent_id is not None
-            and job.ai_protection
-            and random.random() < AI_PROTECTION_SELF_DELETE_PROBABILITY
-        ):
+        self_delete_prob = float(params.get("self_delete_prob", 0.0)) if params else 0.0
+        if sent_id is not None and self_delete_prob and random.random() < self_delete_prob:
             await _maybe_self_delete(
                 app, chat.id, sent_id, job, account, channel_username
             )
@@ -1143,12 +1221,13 @@ def _run_monitoring(
         if job.max_comments and comment_counter[0] >= job.max_comments:
             break
 
-        # ai_protection: skip the whole round during quiet hours (default 02:00–07:00).
-        if job.ai_protection and _in_quiet_hours():
+        # ai_protection: skip the whole round during quiet hours (profile-controlled).
+        if _in_quiet_hours(job):
+            window = _quiet_hours(job)
             _log(
                 job,
                 level=NeuroCommentLog.Level.INFO,
-                message=f"Тихі години {AI_PROTECTION_QUIET_HOURS[0]}-{AI_PROTECTION_QUIET_HOURS[1]} — раунд пропущено",
+                message=f"Тихі години {window[0]:02d}:00-{window[1]:02d}:00 — раунд пропущено",
             )
             if not _interruptible_wait_sync(job.id, 15 * 60):
                 break
@@ -1252,12 +1331,13 @@ def _run_by_count(
         if not active_sources:
             break
 
-        # ai_protection: skip rounds during quiet hours (default 02:00–07:00 local TZ).
-        if job.ai_protection and _in_quiet_hours():
+        # ai_protection: skip rounds during quiet hours (profile-controlled).
+        if _in_quiet_hours(job):
+            window = _quiet_hours(job)
             _log(
                 job,
                 level=NeuroCommentLog.Level.INFO,
-                message=f"Тихі години {AI_PROTECTION_QUIET_HOURS[0]}-{AI_PROTECTION_QUIET_HOURS[1]} — раунд пропущено",
+                message=f"Тихі години {window[0]:02d}:00-{window[1]:02d}:00 — раунд пропущено",
             )
             if not _interruptible_wait_sync(job.id, 15 * 60):
                 break

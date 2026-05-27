@@ -54,6 +54,11 @@ class NeuroCommentJob(models.Model):
         AUTO = "auto", "Авто (визначати з поста)"
         MANUAL = "manual", "Вручну"
 
+    class ProtectionMode(models.TextChoices):
+        SAFE = "safe", "Консервативний"
+        BALANCED = "balanced", "Збалансований"
+        FAST = "fast", "Агресивний"
+
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="neuro_comment_jobs"
     )
@@ -108,6 +113,9 @@ class NeuroCommentJob(models.Model):
 
     # AI protection
     ai_protection = models.BooleanField(default=True)
+    protection_mode = models.CharField(
+        max_length=16, choices=ProtectionMode.choices, default=ProtectionMode.BALANCED
+    )
 
     # Progress / state
     comments_sent = models.PositiveIntegerField(default=0)
