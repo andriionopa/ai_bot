@@ -53,3 +53,4 @@ class ReactionOverviewSerializer(serializers.Serializer):
     bindings = AccountChannelBindingSerializer(many=True)
     channel_templates = ChannelCollectionTemplateSerializer(many=True)
     hardcoded_emojis = serializers.ListField(child=serializers.CharField())
+    stats = serializers.DictField(required=False)

@@ -74,3 +74,7 @@ class NeuroCommentOverviewSerializer(serializers.Serializer):
     system_prompts = NeuroCommentPromptSerializer(many=True)
     user_prompts = NeuroCommentPromptSerializer(many=True)
     blacklist = NeuroCommentBlacklistSerializer(many=True)
+    # Raw dict — covers totals + per-account / per-prompt / top-errors breakdowns
+    # computed in services._neuro_commenting_stats. Shape may evolve, so we pass
+    # it through unchanged rather than locking a schema here.
+    stats = serializers.DictField(required=False)

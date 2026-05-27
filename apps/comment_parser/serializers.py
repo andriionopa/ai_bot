@@ -176,3 +176,4 @@ class CommentParserOverviewSerializer(serializers.Serializer):
     accounts = TelegramAccountSerializer(many=True)
     channel_templates = ChannelCollectionTemplateSerializer(many=True)
     templates = serializers.DictField(child=serializers.ListField(child=serializers.CharField()))
+    stats = serializers.DictField(required=False)

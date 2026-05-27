@@ -491,6 +491,8 @@ def export_results(job: MessageParserJob, *, export_format: str = "csv") -> tupl
 
 
 def overview_payload(owner) -> dict[str, object]:
+    from apps.telegram_accounts import protection
+
     jobs = (
         MessageParserJob.objects.filter(owner=owner)
         .annotate(result_count=Count("results", distinct=True), log_count=Count("logs", distinct=True))
@@ -504,7 +506,9 @@ def overview_payload(owner) -> dict[str, object]:
         .prefetch_related("items")
         .order_by("name", "-created_at")[:100]
     )
+    stats = protection.log_event_stats(MessageParserLog, owner)
     return {
+        "stats": stats,
         "jobs": jobs,
         "results": ParsedUser.objects.filter(owner=owner, job=latest_job).order_by("-message_count", "-last_message_at", "full_name")[:500] if latest_job else [],
         "logs": MessageParserLog.objects.filter(owner=owner, job=latest_job).select_related("account").order_by("created_at")[:500] if latest_job else [],

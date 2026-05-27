@@ -283,3 +283,4 @@ class ChannelParserOverviewSerializer(serializers.Serializer):
     templates = serializers.DictField(child=serializers.ListField(child=serializers.CharField()))
     parser_templates = ChannelParserTemplateSerializer(many=True)
     channel_templates = ChannelCollectionTemplateSerializer(many=True)
+    stats = serializers.DictField(required=False)

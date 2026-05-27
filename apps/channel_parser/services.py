@@ -567,12 +567,15 @@ def export_results(job: ChannelParserJob, *, export_format: str = "csv") -> tupl
 
 
 def overview_payload(owner) -> dict[str, object]:
+    from apps.telegram_accounts import protection
+
     jobs = (
         ChannelParserJob.objects.filter(owner=owner)
         .annotate(result_count=Count("results", distinct=True), log_count=Count("logs", distinct=True))
         .prefetch_related("accounts")
         .order_by("-created_at")[:20]
     )
+    stats = protection.log_event_stats(ChannelParserLog, owner)
     channel_templates = list(
         ChannelCollectionTemplate.objects.filter(owner=owner)
         .annotate(item_count=Count("items", distinct=True))
@@ -598,6 +601,7 @@ def overview_payload(owner) -> dict[str, object]:
             template._prefetched_items = items_by_template.get(template.id, [])
     latest_job = jobs[0] if jobs else None
     return {
+        "stats": stats,
         "jobs": jobs,
         "results": ParsedChannel.objects.filter(owner=owner, job=latest_job).order_by("-rating", "-subscribers", "title")[:300] if latest_job else [],
         "logs": ChannelParserLog.objects.filter(owner=owner, job=latest_job).select_related("account").order_by("created_at")[:300] if latest_job else [],

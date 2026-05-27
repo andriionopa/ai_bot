@@ -531,6 +531,8 @@ def export_results(job: CommentParserJob, *, export_format: str = "csv") -> tupl
 
 
 def overview_payload(owner) -> dict[str, object]:
+    from apps.telegram_accounts import protection
+
     jobs = (
         CommentParserJob.objects.filter(owner=owner)
         .annotate(result_count=Count("results", distinct=True), log_count=Count("logs", distinct=True))
@@ -538,7 +540,9 @@ def overview_payload(owner) -> dict[str, object]:
         .order_by("-created_at")[:20]
     )
     latest_job = jobs[0] if jobs else None
+    stats = protection.log_event_stats(CommentParserLog, owner)
     return {
+        "stats": stats,
         "jobs": jobs,
         "results": (
             ParsedCommenter.objects.filter(owner=owner, job=latest_job).order_by("-comment_count", "-last_comment_at", "full_name")[:500]
