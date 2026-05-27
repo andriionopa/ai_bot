@@ -4,7 +4,6 @@ import asyncio
 import random
 import re
 import time
-from datetime import datetime, timezone as dt_timezone
 
 import requests
 from asgiref.sync import sync_to_async
@@ -33,6 +32,7 @@ from apps.neuro_commenting.models import (
     SYSTEM_PROMPTS,
 )
 from apps.realtime.logging import publish_log_event
+from apps.telegram_accounts import protection
 from apps.telegram_accounts.models import AccountHealthEvent, TelegramAccount
 from apps.telegram_accounts.services import (
     get_account_runtime_block_reason,
@@ -42,9 +42,6 @@ from apps.telegram_accounts.services import (
 
 POLL_INTERVAL_SECONDS = 20
 INTERRUPTIBLE_TICK_SECONDS = 2.0
-TYPING_CHARS_PER_SECOND = 30
-TYPING_MAX_SECONDS = 8.0
-TYPING_MIN_SECONDS = 1.0
 DEFAULT_MONITORING_FALLBACK_MINUTES = 60
 
 
@@ -132,140 +129,31 @@ def _random_delay(min_s: float, max_s: float) -> float:
     return random.uniform(min_s, max_s) if max_s > 0 else 0.0
 
 
-# ai_protection: three intensity profiles modelled on the GramGPT blog numbers.
-# When ai_protection=True, the profile selected by job.protection_mode overrides
-# user-defined timing and dictates the behavioural patterns (typos, profile views,
-# self-delete, quiet hours, typing speed). When False, none of this kicks in.
-#
-# - delay_multiplier   : multiplies the safe base ranges (smaller = faster, riskier)
-# - comment_delay      : (min, max) seconds between consecutive comments (pre-multiplier)
-# - entry_delay        : (min, max) seconds before first action in a new channel
-# - post_age_floor     : minimum age of a post before we comment on it
-# - skip_probability   : chance to drop a candidate post even if it matched filters
-# - read_history_prob  : chance to scroll history before commenting
-# - typing_cpm         : (min, max) chars-per-minute for typing simulation; None → off
-# - typo_prob          : chance to ship a typo then edit
-# - profile_view_prob  : chance to peek at the post author profile before commenting
-# - self_delete_prob   : chance to delete our own comment after some delay
-# - quiet_hours        : (start, end) local-tz hours when monitoring is paused; None → off
-# - scroll_depth       : (min, max) messages to read when scrolling
-AI_PROTECTION_PROFILES: dict[str, dict[str, object]] = {
-    "safe": {
-        "delay_multiplier": 1.5,
-        "comment_delay": (60.0, 180.0),
-        "entry_delay": (90.0, 240.0),
-        "post_age_floor": (90.0, 420.0),
-        "skip_probability": 0.15,
-        "read_history_prob": 0.50,
-        "typing_cpm": (40, 60),
-        "typo_prob": 0.08,
-        "profile_view_prob": 0.90,
-        "self_delete_prob": 0.03,
-        "quiet_hours": (1, 7),
-        "scroll_depth": (10, 30),
-    },
-    "balanced": {
-        "delay_multiplier": 1.0,
-        "comment_delay": (60.0, 180.0),
-        "entry_delay": (90.0, 240.0),
-        "post_age_floor": (60.0, 300.0),
-        "skip_probability": 0.10,
-        "read_history_prob": 0.30,
-        "typing_cpm": (100, 150),
-        "typo_prob": 0.05,
-        "profile_view_prob": 0.70,
-        "self_delete_prob": 0.02,
-        "quiet_hours": (2, 7),
-        "scroll_depth": (5, 20),
-    },
-    "fast": {
-        "delay_multiplier": 0.7,
-        "comment_delay": (60.0, 180.0),
-        "entry_delay": (90.0, 240.0),
-        "post_age_floor": (30.0, 120.0),
-        "skip_probability": 0.05,
-        "read_history_prob": 0.00,
-        "typing_cpm": None,  # no typing simulation in aggressive mode
-        "typo_prob": 0.02,
-        "profile_view_prob": 0.30,
-        "self_delete_prob": 0.01,
-        "quiet_hours": None,
-        "scroll_depth": (5, 10),
-    },
-}
-
-# Shared (non-profile) constants
-AI_PROTECTION_BURST_WINDOW_MIN = 60  # rolling window length in minutes
-AI_PROTECTION_BURST_LIMIT = 15  # max comments per account inside the window
-AI_PROTECTION_TYPO_EDIT_DELAY = (3.0, 8.0)
-AI_PROTECTION_SELF_DELETE_DELAY = (60.0, 300.0)
-
-
-def _protection_params(job: NeuroCommentJob) -> dict[str, object]:
-    """Return the active profile's parameter dict. When ai_protection is off, returns an
-    empty dict — callers must treat absent keys as "feature disabled"."""
-    if not job.ai_protection:
-        return {}
-    mode = getattr(job, "protection_mode", None) or "balanced"
-    return AI_PROTECTION_PROFILES.get(mode, AI_PROTECTION_PROFILES["balanced"])
-
-# Keyboard adjacency for _inject_typo. Covers QWERTY + ЙЦУКЕН neighbours — good enough
-# for a believable single-key slip.
-_KEYBOARD_NEIGHBORS = {
-    "q": "wa", "w": "qeas", "e": "wrds", "r": "etdf", "t": "ryfg", "y": "tugh", "u": "yihj",
-    "i": "uojk", "o": "ipkl", "p": "ol", "a": "qwsz", "s": "awedxz", "d": "sefcx",
-    "f": "drtgvc", "g": "ftyhbv", "h": "gyujnb", "j": "huiknm", "k": "jiolm", "l": "kop",
-    "z": "asx", "x": "zsdc", "c": "xdfv", "v": "cfgb", "b": "vghn", "n": "bhjm", "m": "njk",
-    "й": "цф", "ц": "йук", "у": "цкв", "к": "уеа", "е": "кнг", "н": "егш", "г": "ншщ",
-    "ш": "гщз", "щ": "шзх", "з": "щхї", "х": "зї", "ї": "зхж", "ф": "йві", "і": "віф",
-    "в": "уаіп", "а": "впр", "п": "арс", "р": "псм", "с": "рмі", "м": "сіт", "т": "мь",
-    "ь": "тб", "б": "ьюя", "ю": "бя", "я": "юч", "ч": "яс",
-}
+# ai_protection lives in apps.telegram_accounts.protection — three intensity profiles
+# (safe / balanced / fast), keyboard typo map, typing/quiet-hours helpers, etc. We
+# re-export the few callable bindings used heavily here so the rest of this file
+# reads naturally.
+_protection_params = protection.protection_params
+_inject_typo = protection.inject_typo
+_message_age_seconds = protection.message_age_seconds
 
 
 def _effective_delays(job: NeuroCommentJob) -> tuple[float, float, float, float]:
-    """Returns (comment_min, comment_max, entry_min, entry_max). When ai_protection is on
-    the active profile dictates the base range; delay_multiplier scales it."""
-    params = _protection_params(job)
-    if params:
-        cmin, cmax = params["comment_delay"]  # type: ignore[index]
-        emin, emax = params["entry_delay"]  # type: ignore[index]
-        mult = float(params.get("delay_multiplier", 1.0))
-        return cmin * mult, cmax * mult, emin * mult, emax * mult
-    return (
-        job.comment_delay_min,
-        job.comment_delay_max,
-        job.entry_delay_min,
-        job.entry_delay_max,
+    """Returns (comment_min, comment_max, entry_min, entry_max) using the active
+    ai_protection profile, or the job's user-defined fields when off."""
+    return protection.effective_delays_for(
+        job,
+        base_comment=(job.comment_delay_min, job.comment_delay_max),
+        base_entry=(job.entry_delay_min, job.entry_delay_max),
     )
 
 
 def _quiet_hours(job: NeuroCommentJob) -> tuple[int, int] | None:
-    params = _protection_params(job)
-    return params.get("quiet_hours") if params else None  # type: ignore[return-value]
+    return protection.quiet_hours(job)
 
 
-def _in_quiet_hours(job: NeuroCommentJob, now: datetime | None = None) -> bool:
-    window = _quiet_hours(job)
-    if window is None:
-        return False
-    now = now or timezone.localtime()
-    start, end = window
-    return start <= now.hour < end
-
-
-def _message_age_seconds(message) -> float:
-    raw_date = getattr(message, "date", None)
-    if raw_date is None:
-        return 0.0
-    if isinstance(raw_date, datetime):
-        if raw_date.tzinfo is None:
-            raw_date = raw_date.replace(tzinfo=dt_timezone.utc)
-        return max(0.0, (datetime.now(tz=dt_timezone.utc) - raw_date).total_seconds())
-    try:
-        return max(0.0, time.time() - float(raw_date))
-    except (TypeError, ValueError):
-        return 0.0
+def _in_quiet_hours(job: NeuroCommentJob) -> bool:
+    return protection.in_quiet_hours(job)
 
 
 def _account_recent_comment_count(job_id: int, account_id: int, minutes: int) -> int:
@@ -293,62 +181,8 @@ async_account_recent_comment_count = sync_to_async(_account_recent_comment_count
 async_post_already_commented = sync_to_async(_post_already_commented, thread_sensitive=True)
 
 
-def _typing_seconds(text: str, job: NeuroCommentJob | None = None) -> float:
-    """Estimate believable time-to-type. Reads the active ai_protection profile to pick
-    a chars/minute rate. If the profile is off, or the active mode disables typing
-    (FAST has typing_cpm=None), falls back to the legacy fast constant."""
-    if not text:
-        return TYPING_MIN_SECONDS
-    cpm_range = None
-    if job is not None:
-        params = _protection_params(job)
-        cpm_range = params.get("typing_cpm") if params else None
-    if cpm_range:
-        cpm = random.uniform(*cpm_range)
-        chars_per_second = max(0.5, cpm / 60.0)
-        raw = len(text) / chars_per_second
-        # cap so a long post doesn't keep us "typing" for minutes
-        return min(60.0, max(TYPING_MIN_SECONDS, raw))
-    raw = len(text) / TYPING_CHARS_PER_SECOND
-    return min(TYPING_MAX_SECONDS, max(TYPING_MIN_SECONDS, raw))
-
-
-def _inject_typo(text: str) -> str:
-    """Swap one alphabetic character for a keyboard-adjacent one. Returns the input
-    unchanged if no candidate position is found."""
-    if not text or len(text) < 5:
-        return text
-    candidates = [
-        (idx, ch) for idx, ch in enumerate(text)
-        if ch.lower() in _KEYBOARD_NEIGHBORS
-    ]
-    if not candidates:
-        return text
-    idx, ch = random.choice(candidates)
-    neighbour = random.choice(_KEYBOARD_NEIGHBORS[ch.lower()])
-    if ch.isupper():
-        neighbour = neighbour.upper()
-    return text[:idx] + neighbour + text[idx + 1:]
-
-
-async def _view_post_author(app, message, chat) -> bool:
-    """Generate `users.getFullUser`/`channels.getFullChannel` telemetry — makes the
-    comment look like it followed a profile click. Best-effort; never raises."""
-    try:
-        from_user = getattr(message, "from_user", None)
-        if from_user is not None and getattr(from_user, "id", None):
-            await app.get_users(from_user.id)
-            return True
-        sender_chat = getattr(message, "sender_chat", None)
-        if sender_chat is not None and getattr(sender_chat, "id", None):
-            await app.get_chat(sender_chat.id)
-            return True
-        # fallback: skim a few chat members
-        async for _ in app.get_chat_members(chat.id, limit=random.randint(3, 8)):
-            pass
-        return True
-    except Exception:
-        return False
+_typing_seconds = protection.typing_seconds
+_view_post_author = protection.view_post_author
 
 
 async def _maybe_self_delete(
@@ -361,7 +195,7 @@ async def _maybe_self_delete(
 ) -> None:
     """Sleep a believable amount then delete the message. Blocks this worker — that is
     intentional: it simply extends the natural gap until the account's next action."""
-    delay = random.uniform(*AI_PROTECTION_SELF_DELETE_DELAY)
+    delay = random.uniform(*protection.SELF_DELETE_DELAY)
     completed = await _interruptible_wait_async(job.id, delay)
     if not completed:
         return
@@ -378,20 +212,8 @@ async def _maybe_self_delete(
         pass
 
 
-def _normalize_source(raw_value: str) -> str:
-    value = str(raw_value or "").strip()
-    if not value:
-        return ""
-    if value.lstrip("-").isdigit():
-        return int(value)
-    value = re.sub(r"^https?://t\.me/", "", value, flags=re.IGNORECASE)
-    value = re.sub(r"^t\.me/", "", value, flags=re.IGNORECASE)
-    value = value.lstrip("@").split("?")[0].split("/")[0].strip()
-    return value or raw_value
-
-
-def _is_addlist_source(value: str) -> bool:
-    return "addlist/" in str(value or "")
+_normalize_source = protection.normalize_source
+_is_addlist_source = protection.is_addlist_source
 
 
 def _extract_addlist_slug(value: str) -> str:
@@ -720,6 +542,31 @@ async def _send_typing(app, chat_id) -> None:
         pass
 
 
+async def _resolve_discussion_target(app, chat, message) -> tuple[object, int] | None:
+    """For a post in a broadcast channel, follow its discussion-group link so we can
+    actually reply (Pyrogram returns the linked message in the discussion supergroup).
+    For a regular group / supergroup, returns the original (chat.id, message.id).
+
+    Returns None if the channel has no linked discussion group — caller should treat
+    that as "cannot comment here" and skip the post (and probably blacklist the channel
+    for this owner). Best-effort: any error in resolution falls back to the original
+    chat (covers groups Pyrogram already routes correctly)."""
+    chat_type = str(getattr(chat, "type", "") or "").lower()
+    # Pyrogram exposes ChatType as enum-like; .value is "channel" / "supergroup" / "group" / "private"
+    if "channel" not in chat_type:
+        return chat.id, message.id
+    try:
+        discussion = await app.get_discussion_message(chat.id, message.id)
+    except Exception:
+        return None
+    if discussion is None:
+        return None
+    target_chat = getattr(discussion, "chat", None)
+    if target_chat is None or not getattr(target_chat, "id", None):
+        return None
+    return target_chat.id, discussion.id
+
+
 async def _comment_on_post(
     app,
     job: NeuroCommentJob,
@@ -806,14 +653,33 @@ async def _comment_on_post(
         # no candidate slot to mangle — skip the typo path
         use_typo = False
 
+    # Resolve the actual chat to write into. For broadcast channels we have to follow
+    # the discussion-group link; for groups/supergroups the original (chat, message)
+    # already works. None means the channel has no linked discussion group → skip and
+    # blacklist so the next pass doesn't waste an account on it.
+    target = await _resolve_discussion_target(app, chat, message)
+    if target is None:
+        await async_log(
+            job,
+            level=NeuroCommentLog.Level.WARNING,
+            account=account,
+            channel=channel_username,
+            message=f"{account.label}: канал {channel_username} без discussion group — у чорний список",
+        )
+        await async_add_to_blacklist(
+            job, account, channel_username, NeuroCommentBlacklist.Reason.MANUAL
+        )
+        return False
+    target_chat_id, reply_to_id = target
+
     sent_id: int | None = None
     try:
         if job.first_message_strategy and job.first_message_text:
-            await _send_typing(app, chat.id)
+            await _send_typing(app, target_chat_id)
             # short typing for emoji
-            await _interruptible_wait_async(job.id, TYPING_MIN_SECONDS)
+            await _interruptible_wait_async(job.id, protection.TYPING_MIN_SECONDS)
             sent = await app.send_message(
-                chat.id, job.first_message_text, reply_to_message_id=message.id
+                target_chat_id, job.first_message_text, reply_to_message_id=reply_to_id
             )
             sent_id = sent.id
             edit_delay = max(5, job.first_message_edit_delay)
@@ -821,11 +687,11 @@ async def _comment_on_post(
             if not completed:
                 # job stopped mid-wait: try to clean up the emoji to avoid noise
                 try:
-                    await app.delete_messages(chat.id, sent.id)
+                    await app.delete_messages(target_chat_id, sent.id)
                 except Exception:
                     pass
                 return False
-            await _send_typing(app, chat.id)
+            await _send_typing(app, target_chat_id)
             await _interruptible_wait_async(
                 job.id, _typing_seconds(comment_text, job)
             )
@@ -834,7 +700,7 @@ async def _comment_on_post(
             except Exception as edit_exc:
                 # rollback the placeholder so we don't leave a stray emoji in the chat
                 try:
-                    await app.delete_messages(chat.id, sent.id)
+                    await app.delete_messages(target_chat_id, sent.id)
                 except Exception:
                     pass
                 await async_log(
@@ -848,16 +714,16 @@ async def _comment_on_post(
                 )
                 return False
         elif use_typo:
-            await _send_typing(app, chat.id)
+            await _send_typing(app, target_chat_id)
             await _interruptible_wait_async(
                 job.id, _typing_seconds(typo_text, job)
             )
             sent = await app.send_message(
-                chat.id, typo_text, reply_to_message_id=message.id
+                target_chat_id, typo_text, reply_to_message_id=reply_to_id
             )
             sent_id = sent.id
             await _interruptible_wait_async(
-                job.id, random.uniform(*AI_PROTECTION_TYPO_EDIT_DELAY)
+                job.id, random.uniform(*protection.TYPO_EDIT_DELAY)
             )
             try:
                 await sent.edit_text(comment_text)
@@ -866,11 +732,11 @@ async def _comment_on_post(
                 # mistakes either, so we still count this as a successful comment.
                 pass
         else:
-            await _send_typing(app, chat.id)
+            await _send_typing(app, target_chat_id)
             await _interruptible_wait_async(
                 job.id, _typing_seconds(comment_text, job)
             )
-            sent = await app.send_message(chat.id, comment_text, reply_to_message_id=message.id)
+            sent = await app.send_message(target_chat_id, comment_text, reply_to_message_id=reply_to_id)
             sent_id = getattr(sent, "id", None)
 
         new_total = await async_increment_comments_sent(job.id)
@@ -892,7 +758,7 @@ async def _comment_on_post(
         self_delete_prob = float(params.get("self_delete_prob", 0.0)) if params else 0.0
         if sent_id is not None and self_delete_prob and random.random() < self_delete_prob:
             await _maybe_self_delete(
-                app, chat.id, sent_id, job, account, channel_username
+                app, target_chat_id, sent_id, job, account, channel_username
             )
         return True
     except FloodWait:
@@ -1268,16 +1134,16 @@ def _run_monitoring(
             # in the rolling window, rotate past it and let it cool down.
             if job.ai_protection:
                 recent = _account_recent_comment_count(
-                    job.id, account.id, AI_PROTECTION_BURST_WINDOW_MIN
+                    job.id, account.id, protection.BURST_WINDOW_MIN
                 )
-                if recent >= AI_PROTECTION_BURST_LIMIT:
+                if recent >= protection.BURST_LIMIT:
                     _log(
                         job,
                         level=NeuroCommentLog.Level.INFO,
                         account=account,
                         message=(
-                            f"{account.label}: ліміт сплеску {AI_PROTECTION_BURST_LIMIT}/"
-                            f"{AI_PROTECTION_BURST_WINDOW_MIN}хв — пропускаємо до охолодження"
+                            f"{account.label}: ліміт сплеску {protection.BURST_LIMIT}/"
+                            f"{protection.BURST_WINDOW_MIN}хв — пропускаємо до охолодження"
                         ),
                     )
                     rotator.skip_current()
@@ -1374,16 +1240,16 @@ def _run_by_count(
 
             if job.ai_protection:
                 recent = _account_recent_comment_count(
-                    job.id, account.id, AI_PROTECTION_BURST_WINDOW_MIN
+                    job.id, account.id, protection.BURST_WINDOW_MIN
                 )
-                if recent >= AI_PROTECTION_BURST_LIMIT:
+                if recent >= protection.BURST_LIMIT:
                     _log(
                         job,
                         level=NeuroCommentLog.Level.INFO,
                         account=account,
                         message=(
-                            f"{account.label}: ліміт сплеску {AI_PROTECTION_BURST_LIMIT}/"
-                            f"{AI_PROTECTION_BURST_WINDOW_MIN}хв — пропускаємо до охолодження"
+                            f"{account.label}: ліміт сплеску {protection.BURST_LIMIT}/"
+                            f"{protection.BURST_WINDOW_MIN}хв — пропускаємо до охолодження"
                         ),
                     )
                     rotator.skip_current()
@@ -1552,6 +1418,57 @@ def ensure_system_prompts(owner) -> list[NeuroCommentPrompt]:
     return result
 
 
+def _neuro_commenting_stats(owner, *, window_hours: int = 24) -> dict:
+    """Aggregate counters over the last `window_hours` so the UI can show real
+    analytics on top of the raw NeuroCommentLog journal."""
+    from datetime import timedelta
+    from django.db.models import Count, Q
+
+    since = timezone.now() - timedelta(hours=window_hours)
+    base = NeuroCommentLog.objects.filter(owner=owner, created_at__gte=since)
+
+    level_buckets = base.values("level").annotate(n=Count("id")).order_by()
+    by_level = {row["level"]: row["n"] for row in level_buckets}
+
+    by_account = list(
+        base.filter(level=NeuroCommentLog.Level.SUCCESS, account__isnull=False)
+        .values("account_id", "account__label")
+        .annotate(
+            comments=Count("id"),
+            warnings=Count("id", filter=Q(level=NeuroCommentLog.Level.WARNING)),
+        )
+        .order_by("-comments")[:20]
+    )
+
+    by_prompt = list(
+        base.filter(level=NeuroCommentLog.Level.SUCCESS)
+        .exclude(prompt_name="")
+        .values("prompt_name")
+        .annotate(n=Count("id"))
+        .order_by("-n")[:10]
+    )
+
+    # error breakdown (last window)
+    error_messages = list(
+        base.filter(level__in=[NeuroCommentLog.Level.ERROR, NeuroCommentLog.Level.WARNING])
+        .values("message")
+        .annotate(n=Count("id"))
+        .order_by("-n")[:10]
+    )
+
+    return {
+        "window_hours": window_hours,
+        "total_events": base.count(),
+        "successes": int(by_level.get(NeuroCommentLog.Level.SUCCESS, 0)),
+        "warnings": int(by_level.get(NeuroCommentLog.Level.WARNING, 0)),
+        "errors": int(by_level.get(NeuroCommentLog.Level.ERROR, 0)),
+        "infos": int(by_level.get(NeuroCommentLog.Level.INFO, 0)),
+        "by_account": by_account,
+        "by_prompt": by_prompt,
+        "top_errors": error_messages,
+    }
+
+
 def overview_payload(owner) -> dict:
     from django.db.models import Count
 
@@ -1584,4 +1501,5 @@ def overview_payload(owner) -> dict:
         "system_prompts": system_prompts,
         "user_prompts": user_prompts,
         "blacklist": list(blacklist),
+        "stats": _neuro_commenting_stats(owner),
     }

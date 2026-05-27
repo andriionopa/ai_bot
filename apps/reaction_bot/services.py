@@ -17,6 +17,7 @@ from pyrogram.raw.types import ReactionEmoji
 
 from apps.reaction_bot.models import HARDCODED_EMOJIS, AccountChannelBinding, ReactionJob, ReactionLog
 from apps.realtime.logging import publish_log_event
+from apps.telegram_accounts import protection
 from apps.telegram_accounts.models import AccountHealthEvent, TelegramAccount
 from apps.telegram_accounts.services import (
     get_account_runtime_block_reason,
@@ -68,13 +69,19 @@ def _random_delay(min_s: float, max_s: float) -> float:
 
 
 def _effective_delays(job: ReactionJob) -> tuple[float, float, float, float]:
-    """Returns (reaction_min, reaction_max, entry_min, entry_max) adjusted for speed_mode + ai_protection."""
-    if job.ai_protection:
-        if job.speed_mode == ReactionJob.SpeedMode.FAST:
-            return 5.0, 20.0, 2.0, 8.0
-        if job.speed_mode == ReactionJob.SpeedMode.SAFE:
-            return 20.0, 90.0, 5.0, 20.0
-        return 10.0, 45.0, 3.0, 12.0
+    """Returns (reaction_min, reaction_max, entry_min, entry_max) adjusted via the
+    shared ai_protection profile (speed_mode picks safe/balanced/fast). Reaction-bot
+    delays are scaled-down vs. the comment-oriented profile defaults: divided by ~4
+    because a reaction is a much cheaper action than a full comment, so the
+    multipliers in the profile stay meaningful while the absolute numbers fit
+    reaction cadence."""
+    params = protection.protection_params(job)
+    if params:
+        mult = float(params.get("delay_multiplier", 1.0))
+        # Scale the comment-oriented base ranges down by ~4× to reaction-cadence.
+        cmin, cmax = params["comment_delay"]  # type: ignore[index]
+        emin, emax = params["entry_delay"]  # type: ignore[index]
+        return cmin / 4 * mult, cmax / 4 * mult, emin / 30 * mult, emax / 20 * mult
     return (
         job.reaction_delay_min,
         job.reaction_delay_max,
@@ -619,6 +626,46 @@ def run_reaction_job(job_id: int) -> ReactionJob:
     return job
 
 
+def _reaction_stats(owner, *, window_hours: int = 24) -> dict:
+    """Aggregates over the last `window_hours` of ReactionLog for the owner."""
+    from datetime import timedelta
+    from django.db.models import Q
+
+    since = timezone.now() - timedelta(hours=window_hours)
+    base = ReactionLog.objects.filter(owner=owner, created_at__gte=since)
+
+    level_buckets = base.values("level").annotate(n=Count("id")).order_by()
+    by_level = {row["level"]: row["n"] for row in level_buckets}
+
+    by_account = list(
+        base.filter(level=ReactionLog.Level.SUCCESS, account__isnull=False)
+        .values("account_id", "account__label")
+        .annotate(
+            reactions=Count("id"),
+            warnings=Count("id", filter=Q(level=ReactionLog.Level.WARNING)),
+        )
+        .order_by("-reactions")[:20]
+    )
+
+    top_errors = list(
+        base.filter(level__in=[ReactionLog.Level.ERROR, ReactionLog.Level.WARNING])
+        .values("message")
+        .annotate(n=Count("id"))
+        .order_by("-n")[:10]
+    )
+
+    return {
+        "window_hours": window_hours,
+        "total_events": base.count(),
+        "successes": int(by_level.get(ReactionLog.Level.SUCCESS, 0)),
+        "warnings": int(by_level.get(ReactionLog.Level.WARNING, 0)),
+        "errors": int(by_level.get(ReactionLog.Level.ERROR, 0)),
+        "infos": int(by_level.get(ReactionLog.Level.INFO, 0)),
+        "by_account": by_account,
+        "top_errors": top_errors,
+    }
+
+
 def overview_payload(owner) -> dict:
     jobs = (
         ReactionJob.objects.filter(owner=owner)
@@ -648,4 +695,5 @@ def overview_payload(owner) -> dict:
         "bindings": bindings,
         "channel_templates": channel_templates,
         "hardcoded_emojis": HARDCODED_EMOJIS,
+        "stats": _reaction_stats(owner),
     }
