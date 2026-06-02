@@ -38,136 +38,44 @@ const defaultForm = {
 
 function Toggle({ checked, onChange, label, note }) {
   return (
-    <label className="toggle-line parser-toggle">
+    <label className="toggle-line" style={{ fontWeight: 400 }}>
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
       <span className="switch" />
       <span>
-        <b>{label}</b>
-        {note ? <small>{note}</small> : null}
+        {label && <b style={{ fontWeight: 600 }}>{label}</b>}
+        {note && <small style={{ display: "block", color: "var(--muted)", fontWeight: 400, fontSize: 12, marginTop: 2 }}>{note}</small>}
       </span>
     </label>
   );
 }
 
-function RangeRow({ label, minVal, maxVal, onMin, onMax, unit = "с", presets }) {
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-        <span style={{ fontSize: 13, fontWeight: 500 }}>{label}</span>
-        {presets && (
-          <div style={{ display: "flex", gap: 6 }}>
-            {presets.map(([l, min, max]) => (
-              <button key={l} type="button" className="ghost-button" style={{ fontSize: 11, padding: "2px 8px" }}
-                onClick={() => { onMin(min); onMax(max); }}>{l}</button>
-            ))}
-          </div>
-        )}
-      </div>
-      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        <input type="number" min={0} value={minVal} onChange={e => onMin(+e.target.value)}
-          style={{ width: 80, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)" }} />
-        <span style={{ color: "var(--text-muted)", fontSize: 12 }}>–</span>
-        <input type="number" min={0} value={maxVal} onChange={e => onMax(+e.target.value)}
-          style={{ width: 80, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)" }} />
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{unit} ({minVal}–{maxVal} {unit})</span>
-      </div>
-    </div>
-  );
-}
-
-function AccountPicker({ all, selected, onChange }) {
-  const selectedSet = new Set(selected);
-  const toggle = (id) => {
-    if (selectedSet.has(id)) onChange(selected.filter(x => x !== id));
-    else onChange([...selected, id]);
-  };
-  const addAll = () => onChange(all.map(a => a.id));
-  const removeAll = () => onChange([]);
-
-  return (
-    <div className="parser-account-picker" style={{ display: "flex", gap: 16 }}>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>
-          Доступні акаунти ({all.length})
-        </div>
-        <div style={{ marginBottom: 8 }}>
-          <button type="button" className="ghost-button" style={{ fontSize: 12 }} onClick={addAll}>Додати всі</button>
-        </div>
-        <div style={{ maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
-          {all.map(a => (
-            <div key={a.id}
-              style={{
-                padding: "8px 12px", borderRadius: 8,
-                border: selectedSet.has(a.id) ? "1px solid var(--accent)" : "1px solid var(--border)",
-                background: selectedSet.has(a.id) ? "var(--accent-soft)" : "var(--surface-2)",
-                cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center",
-              }}
-              onClick={() => toggle(a.id)}>
-              <div>
-                <div style={{ fontWeight: 500, fontSize: 13 }}>{a.label}</div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{a.phone_number}</div>
-              </div>
-              <div style={{ fontSize: 11, padding: "2px 6px", borderRadius: 4, background: a.status === "active" ? "#22c55e22" : "#f59e0b22", color: a.status === "active" ? "#22c55e" : "#f59e0b" }}>
-                {a.status === "active" ? "Активний" : a.status}
-              </div>
-            </div>
-          ))}
-          {all.length === 0 && <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Немає підключених акаунтів</div>}
-        </div>
-      </div>
-      <div style={{ flex: 1 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Вибрано ({selected.length})</div>
-          <button type="button" className="ghost-button" style={{ fontSize: 12, color: "#ef4444" }} onClick={removeAll}>Видалити всі</button>
-        </div>
-        <div style={{ maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
-          {selected.length === 0 && (
-            <div style={{ color: "var(--text-muted)", fontSize: 13, textAlign: "center", marginTop: 40 }}>Акаунти не вибрані</div>
-          )}
-          {all.filter(a => selectedSet.has(a.id)).map(a => (
-            <div key={a.id}
-              style={{
-                padding: "8px 12px", borderRadius: 8,
-                border: "1px solid var(--accent)", background: "var(--accent-soft)",
-                cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center",
-              }}
-              onClick={() => toggle(a.id)}>
-              <div>
-                <div style={{ fontWeight: 500, fontSize: 13 }}>{a.label}</div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{a.phone_number}</div>
-              </div>
-              <span style={{ fontSize: 16, color: "#ef4444" }}>×</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function PromptCard({ prompt, selected, onSelect, onPreview }) {
   return (
-    <div style={{
-      border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
-      borderRadius: 10, padding: "12px 14px", cursor: "pointer", position: "relative",
-      background: selected ? "var(--accent-soft)" : "var(--surface-2)",
-      minWidth: 140, maxWidth: 180,
-    }} onClick={onSelect}>
+    <button
+      type="button"
+      className={selected ? "active" : ""}
+      style={{
+        border: selected ? "2px solid var(--blue)" : "1px solid var(--line)",
+        borderRadius: 10, padding: "10px 12px", cursor: "pointer", position: "relative",
+        background: selected ? "rgba(27,164,255,0.12)" : "rgba(255,255,255,0.03)",
+        minWidth: 130, maxWidth: 170, textAlign: "left",
+        display: "flex", flexDirection: "column", gap: 6,
+      }}
+      onClick={onSelect}
+    >
       {selected && (
         <div style={{
           position: "absolute", top: -8, right: -8, width: 20, height: 20,
-          borderRadius: "50%", background: "var(--accent)", color: "#fff",
-          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12,
+          borderRadius: "50%", background: "var(--blue)", color: "#fff",
+          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11,
         }}>✓</div>
       )}
-      <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{prompt.name}</div>
+      <span style={{ fontWeight: 600, fontSize: 13 }}>{prompt.name}</span>
       <div style={{ display: "flex", gap: 6 }}>
         <button type="button" className="ghost-button" style={{ fontSize: 11, padding: "2px 8px" }}
           onClick={(e) => { e.stopPropagation(); onPreview(prompt); }}>👁</button>
-        <button type="button" className="ghost-button" style={{ fontSize: 11, padding: "2px 8px" }}
-          onClick={onSelect}>▶</button>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -184,19 +92,19 @@ function statusLabel(s) {
   return "Чернетка";
 }
 
-function statusClass(s) {
-  if (s === "running") return "info";
-  if (s === "succeeded") return "success";
-  if (s === "failed") return "error";
-  if (s === "stopped") return "warning";
-  return "";
+function statusBadge(s) {
+  if (s === "running") return "blue";
+  if (s === "succeeded") return "green";
+  if (s === "failed") return "red";
+  if (s === "stopped") return "amber";
+  return "gray";
 }
 
 function levelClass(l) {
   if (l === "success") return "success";
   if (l === "error") return "error";
   if (l === "warning") return "warning";
-  return "info";
+  return "";
 }
 
 export default function NeuroCommentingPage() {
@@ -207,7 +115,6 @@ export default function NeuroCommentingPage() {
   const [editingJob, setEditingJob] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
-  const [activeTab, setActiveTab] = useState("accounts");
   const [logFilter, setLogFilter] = useState("all");
   const [sourcesText, setSourcesText] = useState("");
   const [keywordsText, setKeywordsText] = useState("");
@@ -236,16 +143,10 @@ export default function NeuroCommentingPage() {
     return () => clearInterval(pollRef.current);
   }, []);
 
-  const runningJob = overview?.jobs?.find(j => j.status === "running");
-
   const setField = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
 
-  const parseSources = () => {
-    return sourcesText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
-  };
-  const parseKeywords = () => {
-    return keywordsText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
-  };
+  const parseSources = () => sourcesText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+  const parseKeywords = () => keywordsText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
 
   const startEdit = (job) => {
     setEditingJob(job);
@@ -277,21 +178,24 @@ export default function NeuroCommentingPage() {
       entry_delay_max: job.entry_delay_max,
       ai_protection: job.ai_protection,
       protection_mode: job.protection_mode || "balanced",
+      accounts: job.accounts || [],
     });
     setSourcesText((job.sources || []).join("\n"));
     setKeywordsText((job.keywords || []).join("\n"));
   };
 
-  const cancelEdit = () => { setEditingJob(null); setForm(defaultForm); setSourcesText(""); setKeywordsText(""); setSaveError(""); };
+  const cancelEdit = () => {
+    setEditingJob(null);
+    setForm(defaultForm);
+    setSourcesText("");
+    setKeywordsText("");
+    setSaveError("");
+  };
 
   const handleSave = async () => {
-    setSaving(true); setSaveError("");
-    const payload = {
-      ...form,
-      sources: parseSources(),
-      keywords: parseKeywords(),
-      accounts: form.accounts || [],
-    };
+    setSaving(true);
+    setSaveError("");
+    const payload = { ...form, sources: parseSources(), keywords: parseKeywords(), accounts: form.accounts || [] };
     try {
       if (editingJob) {
         await apiFetch(`${BASE}/jobs/${editingJob.id}/`, { method: "PATCH", body: payload });
@@ -326,7 +230,8 @@ export default function NeuroCommentingPage() {
     setCreatingPrompt(true);
     try {
       await apiFetch(`${BASE}/prompts/`, { method: "POST", body: { name: newPromptName.trim(), text: newPromptText.trim() } });
-      setNewPromptName(""); setNewPromptText("");
+      setNewPromptName("");
+      setNewPromptText("");
       await load();
     } catch (e) { alert(normalizeApiError(e)); } finally { setCreatingPrompt(false); }
   };
@@ -347,7 +252,6 @@ export default function NeuroCommentingPage() {
   const logs = overview?.logs || [];
   const filteredLogs = logFilter === "all" ? logs : logs.filter(l => l.level === logFilter);
 
-  const allPrompts = [...(overview?.system_prompts || []), ...(overview?.user_prompts || [])];
   const selectedPromptIds = new Set(form.selected_prompts || []);
   const togglePrompt = (id) => {
     if (selectedPromptIds.has(id)) setField("selected_prompts", [...selectedPromptIds].filter(x => x !== id));
@@ -355,467 +259,460 @@ export default function NeuroCommentingPage() {
   };
 
   const blacklist = overview?.blacklist || [];
-  const filteredBlacklist = blacklistFilter === "all" ? blacklist
-    : blacklist.filter(b => b.account_label === blacklistFilter);
+  const filteredBlacklist = blacklistFilter === "all" ? blacklist : blacklist.filter(b => b.account_label === blacklistFilter);
   const blacklistAccounts = [...new Set(blacklist.map(b => b.account_label).filter(Boolean))];
+
+  const allAccounts = overview?.accounts || [];
+  const selectedAccountIds = new Set(form.accounts || []);
+  const toggleAccount = (id) => {
+    if (selectedAccountIds.has(id)) setField("accounts", [...selectedAccountIds].filter(x => x !== id));
+    else setField("accounts", [...selectedAccountIds, id]);
+  };
 
   if (loading && !overview) return (
     <AppShell>
-      <div className="parser-page"><div style={{ color: "var(--text-muted)" }}>Завантаження…</div></div>
+      <div style={{ padding: 40, color: "var(--muted)" }}>Завантаження…</div>
     </AppShell>
   );
 
   return (
     <AppShell>
-      <div className="parser-page">
-        {/* Hero */}
-        <div className="parser-hero">
+      {/* Hero */}
+      <section className="warmup-card hero-card">
+        <div>
+          <div className="eyebrow">ai automation</div>
           <h2>Нейрокоментинг</h2>
           <p>Автоматичне коментування постів у Telegram-каналах за допомогою ШІ.</p>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
-            <a href="#" className="ghost-button" style={{ fontSize: 12 }}>ℹ О модулі</a>
-            <a href="#" className="ghost-button" style={{ fontSize: 12 }}>📄 Статті</a>
-          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <a href="#" className="ghost-button" style={{ fontSize: 12 }}>ℹ О модулі</a>
+          <button className="ghost-button" onClick={load}>Оновити</button>
+        </div>
+      </section>
+
+      {error && <div className="alert error">{error}</div>}
+
+      {/* Accounts */}
+      <section className="warmup-card">
+        <div className="section-title">
+          <span className="section-icon blue">👥</span>
+          <div><h3>Вибір акаунтів</h3><p>Акаунти, від імені яких писатимуться коментарі</p></div>
+          <strong className="badge blue" style={{ marginLeft: "auto" }}>{selectedAccountIds.size} вибрано</strong>
+        </div>
+        <div className="account-picker">
+          {allAccounts.map(a => (
+            <button
+              key={a.id}
+              className={selectedAccountIds.has(a.id) ? "active" : ""}
+              onClick={() => toggleAccount(a.id)}
+            >
+              <b>{a.label}</b>
+              <span>{a.phone_number}</span>
+            </button>
+          ))}
+          {allAccounts.length === 0 && <div className="empty-state">Немає підключених акаунтів</div>}
+        </div>
+      </section>
+
+      {/* Target channels */}
+      <section className="warmup-card pink-soft">
+        <div className="section-title">
+          <span className="section-icon violet">#</span>
+          <div><h3>Цільові канали</h3><p>Канали, у яких бот коментуватиме пости</p></div>
+          <strong className="badge" style={{ marginLeft: "auto" }}>{parseSources().length} каналів</strong>
+        </div>
+        <textarea
+          className="large-textarea"
+          value={sourcesText}
+          onChange={e => setSourcesText(e.target.value)}
+          placeholder={"@channel1\nhttps://t.me/channel2\nhttps://t.me/addlist/AbCdEfGh"}
+          rows={5}
+        />
+        <p style={{ marginTop: 10, fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>
+          Папку Telegram (t.me/addlist/…) безпечніше додавати замість 50 окремих каналів — це один join-виклик замість десятків, що різко знижує ризик flood-wait.
+          Для приватних каналів додавайте 5–15 на день.
+        </p>
+      </section>
+
+      {/* Message settings */}
+      <section className="warmup-card">
+        <div className="section-title">
+          <span className="section-icon pink">✦</span>
+          <div><h3>Налаштування повідомлень</h3><p>AI промпти та мова генерації коментарів</p></div>
         </div>
 
-        {error && <div style={{ background: "#ef444422", color: "#ef4444", padding: "8px 14px", borderRadius: 8, marginBottom: 16 }}>{error}</div>}
+        <Toggle
+          checked={form.use_ai_prompt}
+          onChange={v => setField("use_ai_prompt", v)}
+          label="Використовувати AI промпт"
+          note="ШІ генерує коментар на основі тексту поста"
+        />
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
-          {/* LEFT — Config */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
-            {/* Accounts section */}
-            <div className="parser-run-card" style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", background: "var(--surface-2)", borderBottom: "1px solid var(--border)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ background: "#3b82f6", borderRadius: 8, padding: "4px 8px", fontSize: 16 }}>👥</span>
-                  <b>Вибір акаунтів</b>
-                  <span className="tag">{(form.accounts || []).length} вибрано</span>
-                  <span className="tag">{overview?.accounts?.length || 0}/{Math.max(overview?.accounts?.length || 0, 50)}</span>
-                </div>
-              </div>
-              <div style={{ padding: 18 }}>
-                <AccountPicker
-                  all={overview?.accounts || []}
-                  selected={form.accounts || []}
-                  onChange={v => setField("accounts", v)}
-                />
-              </div>
-            </div>
-
-            {/* Target channels */}
-            <div className="parser-run-card" style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", background: "var(--surface-2)", borderBottom: "1px solid var(--border)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ background: "#8b5cf6", borderRadius: 8, padding: "4px 8px", fontSize: 16 }}>#</span>
-                  <b>Цільові канали</b>
-                  <span className="tag">{parseSources().length}</span>
-                </div>
-              </div>
-              <div style={{ padding: 18 }}>
-                <div style={{ marginBottom: 10, fontSize: 13, color: "var(--text-muted)" }}>
-                  @username, https://t.me/channel_name або папка https://t.me/addlist/&lt;slug&gt; — кожен запис з нового рядка
-                </div>
-                <textarea
-                  value={sourcesText}
-                  onChange={e => setSourcesText(e.target.value)}
-                  placeholder={"@channel1\nhttps://t.me/channel2\nhttps://t.me/addlist/AbCdEfGh"}
-                  rows={6}
-                  style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", resize: "vertical", fontFamily: "monospace", fontSize: 13 }}
-                />
-                <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-                  Папку Telegram (t.me/addlist/…) безпечніше додавати замість 50 окремих каналів — це один join-виклик замість десятків,
-                  що різко знижує ризик flood-wait. Для приватних каналів додавайте 5–15 на день.
-                </div>
-              </div>
-            </div>
-
-            {/* Message settings */}
-            <div className="parser-run-card" style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "14px 18px", background: "var(--surface-2)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ background: "#ec4899", borderRadius: 8, padding: "4px 8px", fontSize: 16 }}>✦</span>
-                <b>Налаштування повідомлень</b>
-              </div>
-              <div style={{ padding: 18 }}>
-                <Toggle checked={form.use_ai_prompt} onChange={v => setField("use_ai_prompt", v)} label="Використовувати AI промпт" note="ШІ генерує коментар на основі тексту поста" />
-
-                {form.use_ai_prompt && (
-                  <>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginTop: 16, marginBottom: 8 }}>Системні ({(overview?.system_prompts || []).length})</div>
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-                      {(overview?.system_prompts || []).map(p => (
-                        <PromptCard key={p.id} prompt={p}
-                          selected={selectedPromptIds.has(p.id)}
-                          onSelect={() => togglePrompt(p.id)}
-                          onPreview={() => setPreviewPrompt(p)} />
-                      ))}
-                    </div>
-
-                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-muted)", marginBottom: 8 }}>Мої промпти ({(overview?.user_prompts || []).length})</div>
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
-                      {(overview?.user_prompts || []).map(p => (
-                        <PromptCard key={p.id} prompt={p}
-                          selected={selectedPromptIds.has(p.id)}
-                          onSelect={() => togglePrompt(p.id)}
-                          onPreview={() => setPreviewPrompt(p)} />
-                      ))}
-                      {/* Create prompt */}
-                      <div style={{
-                        border: "1px dashed var(--border)", borderRadius: 10, padding: "12px 14px",
-                        cursor: "pointer", minWidth: 140, maxWidth: 200, background: "var(--surface)",
-                      }}>
-                        <input placeholder="Назва промпту" value={newPromptName} onChange={e => setNewPromptName(e.target.value)}
-                          style={{ width: "100%", marginBottom: 6, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", fontSize: 12 }} />
-                        <textarea placeholder="Текст промпту…" value={newPromptText} onChange={e => setNewPromptText(e.target.value)} rows={3}
-                          style={{ width: "100%", marginBottom: 6, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", fontSize: 12, resize: "none" }} />
-                        <button type="button" className="ghost-button" style={{ fontSize: 12, width: "100%" }}
-                          disabled={creatingPrompt} onClick={handleCreatePrompt}>+ Створити</button>
-                      </div>
-                    </div>
-
-                    {/* User prompts delete */}
-                    {(overview?.user_prompts || []).length > 0 && (
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                        {(overview?.user_prompts || []).map(p => (
-                          <button key={p.id} type="button" className="ghost-button" style={{ fontSize: 11, color: "#ef4444" }}
-                            onClick={() => handleDeletePrompt(p)}>✕ {p.name}</button>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )}
-
-                {/* Language mode */}
-                <div style={{ marginTop: 18, marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 16 }}>🌐</span>
-                  <b style={{ fontSize: 13 }}>Режим визначення мови</b>
-                </div>
-                <div style={{ display: "flex", gap: 8, marginBottom: form.language_mode === "manual" ? 10 : 0 }}>
-                  {[["auto", "Авто"], ["manual", "Ручний"]].map(([v, l]) => (
-                    <button key={v} type="button"
-                      className={form.language_mode === v ? "ghost-button" : "ghost-button"}
-                      style={{ padding: "4px 14px", borderRadius: 20, fontWeight: 500, fontSize: 13,
-                        border: form.language_mode === v ? "2px solid var(--accent)" : "1px solid var(--border)",
-                        background: form.language_mode === v ? "var(--accent-soft)" : "transparent" }}
-                      onClick={() => setField("language_mode", v)}>{v === "auto" ? "⚡ Авто" : "≡ Ручний"}</button>
-                  ))}
-                  {form.language_mode === "manual" && (
-                    <select value={form.language} onChange={e => setField("language", e.target.value)}
-                      style={{ padding: "4px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", fontSize: 13 }}>
-                      <option value="ru">🇷🇺 Русский</option>
-                      <option value="uk">🇺🇦 Українська</option>
-                      <option value="en">🇬🇧 English</option>
-                      <option value="de">🇩🇪 Deutsch</option>
-                      <option value="fr">🇫🇷 Français</option>
-                    </select>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Additional settings */}
-            <div className="parser-run-card" style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "14px 18px", background: "var(--surface-2)", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ background: "#374151", borderRadius: 8, padding: "4px 8px", fontSize: 16 }}>⏱</span>
-                <b>Додаткові налаштування</b>
-                <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
-                  {[["Мін", 10, 30, 30, 60], ["Рекомендовані", 53, 99, 84, 156], ["Макс", 120, 240, 180, 360]].map(([l, cmin, cmax, emin, emax]) => (
-                    <button key={l} type="button" className="ghost-button" style={{ fontSize: 11, padding: "2px 10px" }}
-                      onClick={() => { setField("comment_delay_min", cmin); setField("comment_delay_max", cmax); setField("entry_delay_min", emin); setField("entry_delay_max", emax); }}>{l}</button>
+        {form.use_ai_prompt && (
+          <div style={{ marginTop: 20 }}>
+            <div className="warmup-grid two">
+              <div className="dashed-panel">
+                <h4 style={{ margin: "0 0 12px" }}>Системні промпти ({(overview?.system_prompts || []).length})</h4>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {(overview?.system_prompts || []).map(p => (
+                    <PromptCard key={p.id} prompt={p}
+                      selected={selectedPromptIds.has(p.id)}
+                      onSelect={() => togglePrompt(p.id)}
+                      onPreview={() => setPreviewPrompt(p)} />
                   ))}
                 </div>
               </div>
-              <div style={{ padding: 18 }}>
-                <RangeRow label="Затримка перед коментарем"
-                  minVal={form.comment_delay_min} maxVal={form.comment_delay_max}
-                  onMin={v => setField("comment_delay_min", v)} onMax={v => setField("comment_delay_max", v)} />
-                <RangeRow label="Затримка входу в канал"
-                  minVal={form.entry_delay_min} maxVal={form.entry_delay_max}
-                  onMin={v => setField("entry_delay_min", v)} onMax={v => setField("entry_delay_max", v)} />
-
-                {/* Comment mode */}
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Режим коментування</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    {[["all", "Всі пости"], ["keyword", "За ключовими словами"], ["random", "Випадкові"]].map(([v, l]) => (
-                      <button key={v} type="button" className="ghost-button"
-                        style={{ fontSize: 12, padding: "4px 12px",
-                          border: form.comment_mode === v ? "2px solid var(--accent)" : "1px solid var(--border)",
-                          background: form.comment_mode === v ? "var(--accent-soft)" : "transparent" }}
-                        onClick={() => setField("comment_mode", v)}>{l}</button>
+              <div className="dashed-panel">
+                <h4 style={{ margin: "0 0 12px" }}>Мої промпти ({(overview?.user_prompts || []).length})</h4>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {(overview?.user_prompts || []).map(p => (
+                    <PromptCard key={p.id} prompt={p}
+                      selected={selectedPromptIds.has(p.id)}
+                      onSelect={() => togglePrompt(p.id)}
+                      onPreview={() => setPreviewPrompt(p)} />
+                  ))}
+                  <div style={{ border: "1px dashed var(--line)", borderRadius: 10, padding: "10px 12px", minWidth: 140 }}>
+                    <input placeholder="Назва промпту" value={newPromptName} onChange={e => setNewPromptName(e.target.value)}
+                      style={{ marginBottom: 6 }} />
+                    <textarea placeholder="Текст промпту…" value={newPromptText} onChange={e => setNewPromptText(e.target.value)} rows={3}
+                      style={{ marginBottom: 6, resize: "none", width: "100%" }} />
+                    <button type="button" className="ghost-button" style={{ fontSize: 12, width: "100%" }}
+                      disabled={creatingPrompt} onClick={handleCreatePrompt}>+ Створити</button>
+                  </div>
+                </div>
+                {(overview?.user_prompts || []).length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+                    {(overview?.user_prompts || []).map(p => (
+                      <button key={p.id} type="button" className="ghost-button" style={{ fontSize: 11, color: "var(--red)" }}
+                        onClick={() => handleDeletePrompt(p)}>✕ {p.name}</button>
                     ))}
                   </div>
-                  {form.comment_mode === "keyword" && (
-                    <textarea value={keywordsText} onChange={e => setKeywordsText(e.target.value)}
-                      placeholder="Ключові слова (кожне з нового рядка)"
-                      rows={3} style={{ marginTop: 8, width: "100%", padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", resize: "vertical", fontSize: 13 }} />
-                  )}
-                  {form.comment_mode === "random" && (
-                    <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ fontSize: 13 }}>Ймовірність:</span>
-                      <input type="range" min={0} max={1} step={0.05} value={form.random_probability}
-                        onChange={e => setField("random_probability", +e.target.value)} style={{ flex: 1 }} />
-                      <span style={{ fontSize: 13, fontWeight: 600 }}>{Math.round(form.random_probability * 100)}%</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Work mode */}
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>Режим роботи</div>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                    {[["monitoring", "Моніторинг"], ["count", "За кількістю"]].map(([v, l]) => (
-                      <button key={v} type="button" className="ghost-button"
-                        style={{ fontSize: 12, padding: "4px 12px",
-                          border: form.work_mode === v ? "2px solid var(--accent)" : "1px solid var(--border)",
-                          background: form.work_mode === v ? "var(--accent-soft)" : "transparent" }}
-                        onClick={() => setField("work_mode", v)}>{l}</button>
-                    ))}
-                  </div>
-                  {form.work_mode === "monitoring" && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ fontSize: 13 }}>Тривалість:</span>
-                      <input type="number" min={5} value={form.duration_minutes} onChange={e => setField("duration_minutes", +e.target.value)}
-                        style={{ width: 80, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)" }} />
-                      <span style={{ fontSize: 13, color: "var(--text-muted)" }}>хв</span>
-                    </div>
-                  )}
-                  {form.work_mode === "count" && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ fontSize: 13 }}>Макс. коментарів:</span>
-                      <input type="number" min={1} value={form.max_comments} onChange={e => setField("max_comments", +e.target.value)}
-                        style={{ width: 100, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)" }} />
-                    </div>
-                  )}
-                </div>
-
-                {/* Account rotation */}
-                <Toggle checked={form.account_rotation} onChange={v => setField("account_rotation", v)}
-                  label="Ротація акаунтів" note="Автоматично змінювати акаунт після N коментарів" />
-                {form.account_rotation && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8, marginLeft: 32 }}>
-                    <span style={{ fontSize: 13 }}>Змінювати кожні</span>
-                    <input type="number" min={1} max={100} value={form.rotation_every_n} onChange={e => setField("rotation_every_n", +e.target.value)}
-                      style={{ width: 70, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)" }} />
-                    <span style={{ fontSize: 13 }}>коментарів</span>
-                  </div>
-                )}
-
-                {/* Write as channel */}
-                <div style={{ marginTop: 14 }}>
-                  <Toggle checked={form.write_as_channel} onChange={v => setField("write_as_channel", v)}
-                    label="Писати від імені каналу" note="Потрібен Telegram Premium" />
-                  {form.write_as_channel && (
-                    <input placeholder="@channel_username" value={form.write_as_channel_username} onChange={e => setField("write_as_channel_username", e.target.value)}
-                      style={{ marginTop: 8, marginLeft: 32, width: "calc(100% - 32px)", padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", fontSize: 13 }} />
-                  )}
-                </div>
-
-                {/* Auto-reply */}
-                <div style={{ marginTop: 14 }}>
-                  <Toggle checked={form.auto_reply_enabled} onChange={v => setField("auto_reply_enabled", v)}
-                    label="Автовідповідач" note="Автоматично відповідати у ЛС" />
-                  {form.auto_reply_enabled && (
-                    <textarea value={form.auto_reply_message} onChange={e => setField("auto_reply_message", e.target.value)}
-                      placeholder="Введіть повідомлення для автоматичної відповіді у ЛС…"
-                      rows={3} style={{ marginTop: 8, width: "100%", padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", resize: "vertical", fontSize: 13 }} />
-                  )}
-                </div>
-
-                {/* First message strategy */}
-                <div style={{ marginTop: 14 }}>
-                  <Toggle checked={form.first_message_strategy} onChange={v => setField("first_message_strategy", v)}
-                    label="Стратегія першого повідомлення" note="Спочатку надсилає emoji, потім редагує на коментар" />
-                  {form.first_message_strategy && (
-                    <div style={{ marginTop: 8, marginLeft: 32, display: "flex", gap: 10, alignItems: "center" }}>
-                      <input value={form.first_message_text} onChange={e => setField("first_message_text", e.target.value)}
-                        style={{ width: 80, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", fontSize: 16, textAlign: "center" }} />
-                      <span style={{ fontSize: 13, color: "var(--text-muted)" }}>затримка редагування:</span>
-                      <input type="number" min={5} value={form.first_message_edit_delay} onChange={e => setField("first_message_edit_delay", +e.target.value)}
-                        style={{ width: 70, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)" }} />
-                      <span style={{ fontSize: 13, color: "var(--text-muted)" }}>с</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* AI protection */}
-                <div style={{ marginTop: 14 }}>
-                  <Toggle checked={form.ai_protection} onChange={v => setField("ai_protection", v)}
-                    label="AI захист від блокувань" note="Симулює людську поведінку (затримки, друк, перегляд профілів, опечатки)" />
-                  {form.ai_protection && (
-                    <div style={{ marginTop: 10, paddingLeft: 28 }}>
-                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 6 }}>Режим</div>
-                      <select
-                        value={form.protection_mode}
-                        onChange={e => setField("protection_mode", e.target.value)}
-                        style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", fontSize: 13 }}
-                      >
-                        <option value="safe">🛡 Консервативний — макс. безпека, повільно</option>
-                        <option value="balanced">⚖ Збалансований — оптимально (рекомендовано)</option>
-                        <option value="fast">⚡ Агресивний — швидко, мінімальний захист</option>
-                      </select>
-                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.4 }}>
-                        {form.protection_mode === "safe" && "x1.5 затримки · набір 40-60 cpm · сон 01:00-07:00 · перегляд профілів 90% · опечатки 8%"}
-                        {form.protection_mode === "balanced" && "x1.0 затримки · набір 100-150 cpm · сон 02:00-07:00 · перегляд 70% · опечатки 5%"}
-                        {form.protection_mode === "fast" && "x0.7 затримки · набір вимкнено · без сну · перегляд 30% · опечатки 2%"}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Job name + save */}
-            <div className="parser-run-card">
-              <div style={{ marginBottom: 10 }}>
-                <label style={{ fontSize: 13, fontWeight: 500 }}>Назва задачі</label>
-                <input value={form.name} onChange={e => setField("name", e.target.value)}
-                  style={{ marginTop: 4, width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)" }} />
-              </div>
-              {saveError && <div style={{ color: "#ef4444", fontSize: 13, marginBottom: 8 }}>{saveError}</div>}
-              <div style={{ display: "flex", gap: 10 }}>
-                <button type="button" className="parser-run-card" style={{ flex: 1, padding: "10px", textAlign: "center", background: "var(--accent)", color: "#fff", fontWeight: 600, border: "none", borderRadius: 10, cursor: "pointer" }}
-                  disabled={saving} onClick={handleSave}>
-                  {saving ? "Збереження…" : editingJob ? "Зберегти зміни" : "Створити задачу"}
-                </button>
-                {editingJob && (
-                  <button type="button" className="ghost-button" onClick={cancelEdit}>Скасувати</button>
                 )}
               </div>
-            </div>
-          </div>
-
-          {/* RIGHT — Jobs list + logs + blacklist */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
-            {/* Jobs */}
-            <div className="parser-run-card" style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "14px 18px", background: "var(--surface-2)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <b>Задачі ({(overview?.jobs || []).length})</b>
-                <button type="button" className="ghost-button" style={{ fontSize: 12 }} onClick={clearFinished}>Очистити завершені</button>
-              </div>
-              <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 10, maxHeight: 400, overflowY: "auto" }}>
-                {(overview?.jobs || []).length === 0 && (
-                  <div style={{ color: "var(--text-muted)", fontSize: 13, textAlign: "center", padding: 20 }}>Задач ще немає</div>
-                )}
-                {(overview?.jobs || []).map(job => (
-                  <div key={job.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "12px 14px", background: "var(--surface-2)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: 14 }}>{job.name}</div>
-                        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-                          {formatDate(job.created_at)} · Коментарів: {job.comments_sent}
-                        </div>
-                      </div>
-                      <span className={`tag ${statusClass(job.status)}`}>{statusLabel(job.status)}</span>
-                    </div>
-                    {job.error && <div style={{ color: "#ef4444", fontSize: 12, marginTop: 6 }}>{job.error}</div>}
-                    <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                      {job.status !== "running" && (
-                        <button type="button" className="ghost-button" style={{ fontSize: 12, background: "#22c55e22", color: "#22c55e" }}
-                          onClick={() => handleStart(job)}>▶ Запустити</button>
-                      )}
-                      {job.status === "running" && (
-                        <button type="button" className="ghost-button" style={{ fontSize: 12, background: "#ef444422", color: "#ef4444" }}
-                          onClick={() => handleStop(job)}>⏹ Зупинити</button>
-                      )}
-                      <button type="button" className="ghost-button" style={{ fontSize: 12 }} onClick={() => startEdit(job)}>✏ Редагувати</button>
-                      <button type="button" className="ghost-button" style={{ fontSize: 12, color: "#ef4444" }} onClick={() => handleDelete(job)}>✕</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Logs */}
-            <div className="parser-run-card" style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "14px 18px", background: "var(--surface-2)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <b>Логи ({filteredLogs.length})</b>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {["all", "info", "success", "warning", "error"].map(l => (
-                    <button key={l} type="button" className="ghost-button"
-                      style={{ fontSize: 11, padding: "2px 8px", border: logFilter === l ? "2px solid var(--accent)" : "1px solid var(--border)" }}
-                      onClick={() => setLogFilter(l)}>{l}</button>
-                  ))}
-                </div>
-              </div>
-              <div className="parser-terminal" style={{ maxHeight: 320, overflowY: "auto" }}>
-                {filteredLogs.length === 0 && (
-                  <div style={{ color: "var(--text-muted)", padding: 12, fontSize: 13 }}>Логів немає</div>
-                )}
-                {[...filteredLogs].reverse().map(log => (
-                  <div key={log.id} style={{ padding: "5px 12px", borderBottom: "1px solid var(--border)33", display: "flex", gap: 10, fontSize: 12 }}>
-                    <span style={{ opacity: 0.5, whiteSpace: "nowrap" }}>{new Date(log.created_at).toLocaleTimeString("uk-UA")}</span>
-                    <span className={`tag ${levelClass(log.level)}`} style={{ fontSize: 10 }}>{log.level}</span>
-                    <span style={{ flex: 1, color: "var(--text)" }}>{log.message}</span>
-                    {log.comment_text && <span style={{ color: "#8b5cf6", fontSize: 11 }}>💬 {log.comment_text.slice(0, 40)}</span>}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Blacklist */}
-            <div className="parser-run-card" style={{ padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "14px 18px", background: "var(--surface-2)", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ background: "#ef4444", borderRadius: 8, padding: "4px 8px", fontSize: 16 }}>🚫</span>
-                  <b>Чорний список</b>
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <select value={blacklistFilter} onChange={e => setBlacklistFilter(e.target.value)}
-                    style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text)", fontSize: 12 }}>
-                    <option value="all">Всі акаунти</option>
-                    {blacklistAccounts.map(a => <option key={a} value={a}>{a}</option>)}
-                  </select>
-                  <button type="button" className="ghost-button" style={{ fontSize: 12, color: "#ef4444" }} onClick={clearBlacklist}>Очистити все</button>
-                </div>
-              </div>
-              <div style={{ padding: 14, display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto" }}>
-                {filteredBlacklist.length === 0 && (
-                  <div style={{ textAlign: "center", padding: 20 }}>
-                    <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
-                    <div style={{ fontWeight: 600, marginBottom: 4 }}>В чорному списку немає груп</div>
-                    <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Групи будуть автоматично додані при виникненні помилок</div>
-                  </div>
-                )}
-                {filteredBlacklist.map(item => (
-                  <div key={item.id} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, alignItems: "center", padding: "8px 10px", borderRadius: 8, background: "var(--surface-2)", border: "1px solid var(--border)" }}>
-                    <div>
-                      <div style={{ fontSize: 13, color: "var(--text-muted)", fontSize: 11 }}>АКАУНТ</div>
-                      <div style={{ fontSize: 13 }}>{item.account_label || "—"}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>ПРИЧИНА</div>
-                      <div style={{ fontSize: 13 }}>{item.reason}</div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>КАНАЛ</div>
-                      <div style={{ fontSize: 13 }}>@{item.channel_username}</div>
-                    </div>
-                    <button type="button" className="ghost-button" style={{ fontSize: 12, color: "#ef4444" }}
-                      onClick={() => handleDeleteBlacklist(item)}>✕</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Prompt preview modal */}
-        {previewPrompt && (
-          <div style={{
-            position: "fixed", inset: 0, background: "#00000088", zIndex: 1000,
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }} onClick={() => setPreviewPrompt(null)}>
-            <div style={{ background: "var(--surface)", borderRadius: 16, padding: 28, maxWidth: 480, width: "90%", boxShadow: "0 20px 60px #0006" }}
-              onClick={e => e.stopPropagation()}>
-              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>{previewPrompt.name}</div>
-              <div style={{ color: "var(--text-muted)", fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{previewPrompt.text}</div>
-              <button type="button" className="ghost-button" style={{ marginTop: 16, width: "100%" }} onClick={() => setPreviewPrompt(null)}>Закрити</button>
             </div>
           </div>
         )}
-      </div>
+
+        <div style={{ marginTop: 20 }}>
+          <div className="section-title" style={{ marginBottom: 10 }}>
+            <span style={{ fontSize: 18 }}>🌐</span>
+            <h4 style={{ margin: 0, fontWeight: 600 }}>Мова коментарів</h4>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {[["auto", "⚡ Авто"], ["manual", "≡ Ручний"]].map(([v, l]) => (
+              <button key={v} type="button" className={`ghost-button${form.language_mode === v ? " active" : ""}`}
+                style={{ padding: "4px 16px", fontWeight: 500,
+                  border: form.language_mode === v ? "2px solid var(--blue)" : undefined,
+                  background: form.language_mode === v ? "rgba(27,164,255,0.12)" : undefined }}
+                onClick={() => setField("language_mode", v)}>{l}</button>
+            ))}
+            {form.language_mode === "manual" && (
+              <select value={form.language} onChange={e => setField("language", e.target.value)}>
+                <option value="ru">🇷🇺 Русский</option>
+                <option value="uk">🇺🇦 Українська</option>
+                <option value="en">🇬🇧 English</option>
+                <option value="de">🇩🇪 Deutsch</option>
+                <option value="fr">🇫🇷 Français</option>
+              </select>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Timing / delays */}
+      <section className="warmup-card danger-soft">
+        <div className="section-title">
+          <span className="section-icon red">◇</span>
+          <div><h3>Ліміти та затримки</h3><p>Захист від flood-wait під час коментування</p></div>
+          <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+            {[["Мін", 10, 30, 30, 60], ["Рекомендовані", 53, 99, 84, 156], ["Макс", 120, 240, 180, 360]].map(([l, cmin, cmax, emin, emax]) => (
+              <button key={l} type="button" className="ghost-button" style={{ fontSize: 11, padding: "2px 10px" }}
+                onClick={() => { setField("comment_delay_min", cmin); setField("comment_delay_max", cmax); setField("entry_delay_min", emin); setField("entry_delay_max", emax); }}>{l}</button>
+            ))}
+          </div>
+        </div>
+        <div className="warmup-grid two">
+          <div className="dashed-panel">
+            <h4 style={{ margin: "0 0 14px" }}>Затримка перед коментарем</h4>
+            <div className="field-row">
+              <label>Мін (с)<input type="number" min={0} value={form.comment_delay_min} onChange={e => setField("comment_delay_min", +e.target.value)} /></label>
+              <label>Макс (с)<input type="number" min={0} value={form.comment_delay_max} onChange={e => setField("comment_delay_max", +e.target.value)} /></label>
+            </div>
+          </div>
+          <div className="dashed-panel">
+            <h4 style={{ margin: "0 0 14px" }}>Затримка входу в канал</h4>
+            <div className="field-row">
+              <label>Мін (с)<input type="number" min={0} value={form.entry_delay_min} onChange={e => setField("entry_delay_min", +e.target.value)} /></label>
+              <label>Макс (с)<input type="number" min={0} value={form.entry_delay_max} onChange={e => setField("entry_delay_max", +e.target.value)} /></label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Work modes */}
+      <section className="warmup-card success-soft">
+        <div className="section-title">
+          <span className="section-icon green">⚙</span>
+          <div><h3>Режим роботи</h3><p>Коментування, тривалість, ротація акаунтів</p></div>
+        </div>
+        <div className="warmup-grid two">
+          <div className="dashed-panel">
+            <h4 style={{ margin: "0 0 14px" }}>Режим коментування</h4>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+              {[["all", "Всі пости"], ["keyword", "За ключовими словами"], ["random", "Випадкові"]].map(([v, l]) => (
+                <button key={v} type="button" className="ghost-button"
+                  style={{ fontSize: 12, padding: "4px 12px",
+                    border: form.comment_mode === v ? "2px solid var(--blue)" : undefined,
+                    background: form.comment_mode === v ? "rgba(27,164,255,0.12)" : undefined }}
+                  onClick={() => setField("comment_mode", v)}>{l}</button>
+              ))}
+            </div>
+            {form.comment_mode === "keyword" && (
+              <textarea value={keywordsText} onChange={e => setKeywordsText(e.target.value)}
+                placeholder="Ключові слова (кожне з нового рядка)" rows={3}
+                style={{ width: "100%", resize: "vertical" }} />
+            )}
+            {form.comment_mode === "random" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 13 }}>Ймовірність:</span>
+                <input type="range" min={0} max={1} step={0.05} value={form.random_probability}
+                  onChange={e => setField("random_probability", +e.target.value)} style={{ flex: 1 }} />
+                <b style={{ fontSize: 13 }}>{Math.round(form.random_probability * 100)}%</b>
+              </div>
+            )}
+
+            <h4 style={{ margin: "18px 0 10px" }}>Режим тривалості</h4>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              {[["monitoring", "Моніторинг"], ["count", "За кількістю"]].map(([v, l]) => (
+                <button key={v} type="button" className="ghost-button"
+                  style={{ fontSize: 12, padding: "4px 12px",
+                    border: form.work_mode === v ? "2px solid var(--blue)" : undefined,
+                    background: form.work_mode === v ? "rgba(27,164,255,0.12)" : undefined }}
+                  onClick={() => setField("work_mode", v)}>{l}</button>
+              ))}
+            </div>
+            {form.work_mode === "monitoring" && (
+              <div className="field-row">
+                <label>Тривалість (хв)<input type="number" min={5} value={form.duration_minutes} onChange={e => setField("duration_minutes", +e.target.value)} /></label>
+              </div>
+            )}
+            {form.work_mode === "count" && (
+              <div className="field-row">
+                <label>Макс. коментарів<input type="number" min={1} value={form.max_comments} onChange={e => setField("max_comments", +e.target.value)} /></label>
+              </div>
+            )}
+          </div>
+          <div className="dashed-panel">
+            <h4 style={{ margin: "0 0 14px" }}>Ротація акаунтів</h4>
+            <Toggle checked={form.account_rotation} onChange={v => setField("account_rotation", v)}
+              label="Ротація акаунтів" note="Автоматично змінювати акаунт після N коментарів" />
+            {form.account_rotation && (
+              <div className="field-row" style={{ marginTop: 12 }}>
+                <label>Змінювати кожні N коментарів<input type="number" min={1} max={100} value={form.rotation_every_n} onChange={e => setField("rotation_every_n", +e.target.value)} /></label>
+              </div>
+            )}
+
+            <h4 style={{ margin: "18px 0 10px" }}>Від кого писати</h4>
+            <Toggle checked={form.write_as_channel} onChange={v => setField("write_as_channel", v)}
+              label="Писати від імені каналу" note="Потрібен Telegram Premium" />
+            {form.write_as_channel && (
+              <div className="field-row" style={{ marginTop: 10 }}>
+                <label>Username каналу<input placeholder="@channel_username" value={form.write_as_channel_username} onChange={e => setField("write_as_channel_username", e.target.value)} /></label>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Special features */}
+      <section className="warmup-card">
+        <div className="section-title">
+          <span className="section-icon violet">◈</span>
+          <div><h3>Спеціальні функції</h3><p>Автовідповідь та стратегія першого повідомлення</p></div>
+        </div>
+        <div className="warmup-grid two">
+          <div className="dashed-panel">
+            <Toggle checked={form.auto_reply_enabled} onChange={v => setField("auto_reply_enabled", v)}
+              label="Автовідповідач" note="Автоматично відповідати у ЛС" />
+            {form.auto_reply_enabled && (
+              <textarea value={form.auto_reply_message} onChange={e => setField("auto_reply_message", e.target.value)}
+                placeholder="Повідомлення для автовідповіді у ЛС…"
+                rows={3} style={{ marginTop: 10, width: "100%", resize: "vertical" }} />
+            )}
+          </div>
+          <div className="dashed-panel">
+            <Toggle checked={form.first_message_strategy} onChange={v => setField("first_message_strategy", v)}
+              label="Стратегія першого повідомлення" note="Спочатку надсилає emoji, потім редагує на коментар" />
+            {form.first_message_strategy && (
+              <div className="field-row" style={{ marginTop: 12 }}>
+                <label>Emoji<input value={form.first_message_text} onChange={e => setField("first_message_text", e.target.value)} style={{ textAlign: "center", fontSize: 18 }} /></label>
+                <label>Затримка редагування (с)<input type="number" min={5} value={form.first_message_edit_delay} onChange={e => setField("first_message_edit_delay", +e.target.value)} /></label>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* AI Protection */}
+      <section className="warmup-card">
+        <div className="section-title">
+          <span className="section-icon green">🛡</span>
+          <div><h3>AI захист від блокувань</h3><p>Симулює людську поведінку: затримки, набір тексту, перегляди профілів, опечатки</p></div>
+          <div style={{ marginLeft: "auto" }}>
+            <Toggle checked={form.ai_protection} onChange={v => setField("ai_protection", v)} label="" />
+          </div>
+        </div>
+        {form.ai_protection && (
+          <div className="intensity-list">
+            {[
+              ["safe", "🛡 Консервативний", "x1.5 затримки · набір 40-60 cpm · сон 01:00-07:00 · перегляд профілів 90% · опечатки 8%"],
+              ["balanced", "⚖ Збалансований", "x1.0 затримки · набір 100-150 cpm · сон 02:00-07:00 · перегляд 70% · опечатки 5% (рекомендовано)"],
+              ["fast", "⚡ Агресивний", "x0.7 затримки · набір вимкнено · без нічного сну · перегляд 30% · опечатки 2%"],
+            ].map(([v, title, desc]) => (
+              <button key={v} type="button"
+                className={form.protection_mode === v ? "active" : ""}
+                onClick={() => setField("protection_mode", v)}>
+                <b>{title}</b>
+                <span>{desc}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Job name + Launch */}
+      <section className="warmup-card launch-panel">
+        <div className="launch-stats">
+          <div><span>Акаунти</span><b>{selectedAccountIds.size}</b></div>
+          <div><span>Канали</span><b>{parseSources().length}</b></div>
+          <div><span>Захист</span><b>{form.ai_protection ? form.protection_mode : "вимк"}</b></div>
+          <div><span>Статус</span><b>{editingJob ? "Редагування" : "Нова задача"}</b></div>
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <label>Назва задачі
+            <input value={form.name} onChange={e => setField("name", e.target.value)} />
+          </label>
+          {saveError && <div style={{ color: "var(--red)", fontSize: 13, marginTop: 8 }}>{saveError}</div>}
+          <div className="launch-box" style={{ marginTop: 14 }}>
+            <button className="primary-button big" disabled={saving} onClick={handleSave}>
+              {saving ? "Збереження…" : editingJob ? "▷ Зберегти зміни" : "▷ Створити задачу"}
+            </button>
+            {editingJob && (
+              <button className="ghost-button" onClick={cancelEdit}>Скасувати</button>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Jobs list */}
+      <section className="warmup-card">
+        <div className="section-title">
+          <span className="section-icon blue">☰</span>
+          <div><h3>Задачі ({(overview?.jobs || []).length})</h3><p>Активні та завершені задачі коментування</p></div>
+          <button className="ghost-button" style={{ marginLeft: "auto" }} onClick={clearFinished}>Очистити завершені</button>
+        </div>
+        <div className="plan-grid">
+          {(overview?.jobs || []).length === 0 && <div className="empty-state">Задач ще немає</div>}
+          {(overview?.jobs || []).map(job => (
+            <article key={job.id} className="plan-card">
+              <div><b>{job.name}</b><span>{formatDate(job.created_at)} · {job.comments_sent} коментарів</span></div>
+              <strong className={`badge ${statusBadge(job.status)}`}>{statusLabel(job.status)}</strong>
+              {job.error && <small style={{ color: "var(--red)" }}>{job.error}</small>}
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                {job.status !== "running" && (
+                  <button type="button" className="ghost-button" style={{ fontSize: 12, background: "rgba(28,201,138,0.15)", color: "var(--green)" }}
+                    onClick={() => handleStart(job)}>▶ Запустити</button>
+                )}
+                {job.status === "running" && (
+                  <button type="button" className="ghost-button" style={{ fontSize: 12, background: "rgba(243,95,111,0.15)", color: "var(--red)" }}
+                    onClick={() => handleStop(job)}>⏹ Зупинити</button>
+                )}
+                <button type="button" className="ghost-button" style={{ fontSize: 12 }} onClick={() => startEdit(job)}>✏ Редагувати</button>
+                <button type="button" className="ghost-button" style={{ fontSize: 12, color: "var(--red)" }} onClick={() => handleDelete(job)}>✕</button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {/* Logs */}
+      <section className="warmup-card logs-card">
+        <div className="log-toolbar">
+          <span className="online-dot">● логи</span>
+          <span>Усі {logs.length}</span>
+          {["info", "success", "warning", "error"].map(l => (
+            <button key={l} type="button"
+              className={logFilter === l ? "active" : ""}
+              onClick={() => setLogFilter(logFilter === l ? "all" : l)}>
+              {l} {logs.filter(x => x.level === l).length}
+            </button>
+          ))}
+        </div>
+        <div className="terminal">
+          {filteredLogs.length === 0 && <div className="empty-state">Логів поки немає</div>}
+          {[...filteredLogs].reverse().map(log => (
+            <div key={log.id} className={`terminal-line ${levelClass(log.level)}`}>
+              <time>{new Date(log.created_at).toLocaleTimeString("uk-UA")}</time>
+              <span>{log.level === "error" ? "❌" : log.level === "warning" ? "⚠️" : "✅"}</span>
+              <b>{log.account_label || "system"}</b>
+              <p>{log.message}{log.comment_text ? ` 💬 ${log.comment_text.slice(0, 60)}` : ""}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Blacklist */}
+      <section className="warmup-card">
+        <div className="section-title">
+          <span className="section-icon red">🚫</span>
+          <div><h3>Чорний список</h3><p>Канали з помилками, куди бот тимчасово не коментуватиме</p></div>
+          <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
+            <select value={blacklistFilter} onChange={e => setBlacklistFilter(e.target.value)}>
+              <option value="all">Всі акаунти</option>
+              {blacklistAccounts.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+            <button type="button" className="ghost-button" style={{ color: "var(--red)" }} onClick={clearBlacklist}>Очистити все</button>
+          </div>
+        </div>
+        {filteredBlacklist.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "30px 0" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+            <b>В чорному списку немає груп</b>
+            <p style={{ color: "var(--muted)", fontSize: 13 }}>Групи будуть автоматично додані при виникненні помилок</p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {filteredBlacklist.map(item => (
+              <div key={item.id} style={{
+                display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 8, alignItems: "center",
+                padding: "10px 14px", borderRadius: 10, background: "rgba(255,255,255,0.04)", border: "1px solid var(--line)",
+              }}>
+                <div><div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>АКАУНТ</div><div style={{ fontSize: 13 }}>{item.account_label || "—"}</div></div>
+                <div><div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>ПРИЧИНА</div><div style={{ fontSize: 13 }}>{item.reason}</div></div>
+                <div><div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 2 }}>КАНАЛ</div><div style={{ fontSize: 13 }}>@{item.channel_username}</div></div>
+                <button type="button" className="ghost-button" style={{ color: "var(--red)" }} onClick={() => handleDeleteBlacklist(item)}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Prompt preview modal */}
+      {previewPrompt && (
+        <div
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setPreviewPrompt(null)}
+        >
+          <div
+            style={{ background: "var(--panel-strong)", borderRadius: 16, padding: 28, maxWidth: 480, width: "90%", boxShadow: "var(--shadow)", border: "1px solid var(--line)" }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>{previewPrompt.name}</div>
+            <div style={{ color: "var(--muted)", fontSize: 14, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{previewPrompt.text}</div>
+            <button type="button" className="ghost-button" style={{ marginTop: 16, width: "100%" }} onClick={() => setPreviewPrompt(null)}>Закрити</button>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }
