@@ -9,8 +9,9 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
 from apps.realtime.logging import publish_log_event
-from apps.telegram_accounts.models import AccountRoleTemplate, Proxy, TelegramAccount
+from apps.telegram_accounts.models import AccountGGRRating, AccountRoleTemplate, Proxy, TelegramAccount
 from apps.telegram_accounts.serializers import (
+    AccountGGRRatingSerializer,
     AccountRoleTemplateSerializer,
     FarmOverviewSerializer,
     AccountRuntimeEventCreateSerializer,
@@ -565,3 +566,98 @@ class TelegramAccountViewSet(OwnerQuerysetMixin, viewsets.ModelViewSet):
                 status=status.HTTP_201_CREATED,
             )
         return Response({"task_id": task.id, "mode": "async"}, status=status.HTTP_202_ACCEPTED)
+
+
+class GGRViewSet(viewsets.ViewSet):
+    """GGR rating endpoints: trigger check, list ratings, geo benchmark."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _qs(self, request):
+        return AccountGGRRating.objects.filter(owner=request.user).select_related("account")
+
+    @action(detail=False, methods=["post"], url_path="check")
+    def check(self, request):
+        """Trigger GGR check for one or many accounts. Body: {account_ids: [int]}"""
+        from apps.telegram_accounts.rating import create_ggr_rating
+        from apps.telegram_accounts.tasks import run_ggr_rating_task
+
+        account_ids = request.data.get("account_ids") or []
+        if not account_ids:
+            return Response({"error": "account_ids required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        accounts = TelegramAccount.objects.filter(owner=request.user, pk__in=account_ids)
+        created = []
+        for account in accounts:
+            rating = create_ggr_rating(account)
+            task = run_ggr_rating_task.delay(rating.id)
+            rating.celery_task_id = task.id
+            rating.save(update_fields=["celery_task_id"])
+            created.append({"rating_id": rating.id, "account_id": account.id, "task_id": task.id})
+
+        return Response({"created": created}, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=False, methods=["get"], url_path="ratings")
+    def ratings(self, request):
+        """Latest GGR rating per account for the current user."""
+        from django.db.models import OuterRef, Subquery
+
+        latest_ids = (
+            AccountGGRRating.objects.filter(owner=request.user, account=OuterRef("account"))
+            .order_by("-created_at")
+            .values("id")[:1]
+        )
+        qs = self._qs(request).filter(pk__in=Subquery(latest_ids)).order_by("-created_at")
+        return Response(AccountGGRRatingSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=["get"], url_path=r"history/(?P<account_id>\d+)")
+    def history(self, request, account_id=None):
+        """All GGR ratings for a specific account."""
+        qs = self._qs(request).filter(account_id=account_id).order_by("-created_at")[:20]
+        return Response(AccountGGRRatingSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=["get"], url_path="overview")
+    def overview(self, request):
+        """Overview: accounts with latest rating + geo benchmark."""
+        from django.db.models import OuterRef, Subquery
+
+        accounts = (
+            TelegramAccount.objects.filter(owner=request.user, is_attached=True)
+            .select_related("proxy")
+            .order_by("-created_at")
+        )
+
+        latest_rating_id = (
+            AccountGGRRating.objects.filter(owner=request.user, account=OuterRef("pk"))
+            .order_by("-created_at")
+            .values("id")[:1]
+        )
+        accounts = accounts.annotate(latest_ggr_id=Subquery(latest_rating_id))
+
+        rating_map: dict[int, AccountGGRRating] = {}
+        rating_ids = [a.latest_ggr_id for a in accounts if a.latest_ggr_id]
+        if rating_ids:
+            for r in AccountGGRRating.objects.filter(pk__in=rating_ids):
+                rating_map[r.account_id] = r
+
+        from apps.telegram_accounts.serializers import TelegramAccountSerializer
+        accounts_data = []
+        for acc in accounts:
+            acc_dict = TelegramAccountSerializer(acc).data
+            ggr = rating_map.get(acc.id)
+            acc_dict["ggr"] = AccountGGRRatingSerializer(ggr).data if ggr else None
+            accounts_data.append(acc_dict)
+
+        # Simple geo benchmark from all done ratings for this user
+        from django.db.models import Avg, Count
+        geo_stats = (
+            AccountGGRRating.objects.filter(owner=request.user, status="done", geo__gt="")
+            .values("geo")
+            .annotate(avg_score=Avg("score"), count=Count("id"), avg_survival_7d=Avg("survival_7d"), avg_lifetime=Avg("median_lifetime_days"))
+            .order_by("-avg_score")[:20]
+        )
+
+        return Response({
+            "accounts": accounts_data,
+            "geo_benchmark": list(geo_stats),
+        })

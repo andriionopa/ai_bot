@@ -1,12 +1,13 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from apps.telegram_accounts.views import AccountRoleTemplateViewSet, ProxyViewSet, TelegramAccountViewSet
+from apps.telegram_accounts.views import AccountRoleTemplateViewSet, GGRViewSet, ProxyViewSet, TelegramAccountViewSet
 
 router = DefaultRouter()
 router.register("proxies", ProxyViewSet, basename="proxy")
 router.register("role-templates", AccountRoleTemplateViewSet, basename="account-role-template")
 router.register("telegram-accounts", TelegramAccountViewSet, basename="telegram-account")
+router.register("ggr", GGRViewSet, basename="ggr")
 
 account_overview = TelegramAccountViewSet.as_view({"get": "overview"})
 account_add = TelegramAccountViewSet.as_view({"post": "add"})

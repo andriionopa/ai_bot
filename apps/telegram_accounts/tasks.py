@@ -1,7 +1,7 @@
 from celery import shared_task
 from django.utils import timezone
 
-from apps.telegram_accounts.models import AccountHealthEvent, Proxy, TelegramAccount
+from apps.telegram_accounts.models import AccountGGRRating, AccountHealthEvent, Proxy, TelegramAccount
 from apps.telegram_accounts.services import (
     check_proxy_connectivity,
     recalculate_account_state,
@@ -104,6 +104,20 @@ def recalculate_all_accounts_health_task() -> int:
         recalculate_account_state(account)
         count += 1
     return count
+
+
+@shared_task
+def run_ggr_rating_task(rating_id: int) -> dict[str, object]:
+    from apps.telegram_accounts.rating import run_ggr_rating
+    rating = run_ggr_rating(rating_id)
+    return {
+        "rating_id": rating.id,
+        "account_id": rating.account_id,
+        "status": rating.status,
+        "score": str(rating.score) if rating.score is not None else None,
+        "label": rating.label,
+        "error": rating.error or None,
+    }
 
 
 @shared_task

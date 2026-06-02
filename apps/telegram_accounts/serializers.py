@@ -7,7 +7,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from apps.input_validation import validate_json_object_size, validate_pyrogram_session_file
-from apps.telegram_accounts.models import AccountHealthEvent, AccountRoleTemplate, Proxy, TelegramAccount
+from apps.telegram_accounts.models import AccountGGRRating, AccountHealthEvent, AccountRoleTemplate, Proxy, TelegramAccount
 from apps.telegram_accounts.services import account_liveness_score, account_risk_level
 
 
@@ -76,6 +76,8 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
     current_warmup_action_status = serializers.SerializerMethodField()
     current_warmup_action_label = serializers.SerializerMethodField()
     is_reacting = serializers.SerializerMethodField()
+    ggr_score = serializers.SerializerMethodField()
+    ggr_label = serializers.SerializerMethodField()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -131,6 +133,8 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             "system_version",
             "randomize_device_profile",
             "warmup_age_days",
+            "ggr_score",
+            "ggr_label",
             "created_at",
         )
         read_only_fields = (
@@ -303,6 +307,14 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
             action = base_qs.filter(status=WarmupAction.Status.QUEUED).order_by("scheduled_for", "id").first()
         obj._current_warmup_action_cache = action or False
         return action
+
+    def get_ggr_score(self, obj):
+        rating = obj.ggr_ratings.filter(status="done").order_by("-created_at").first()
+        return str(rating.score) if rating else None
+
+    def get_ggr_label(self, obj):
+        rating = obj.ggr_ratings.filter(status="done").order_by("-created_at").first()
+        return rating.label if rating else None
 
     def update(self, instance, validated_data):
         template = validated_data.get("role_template", serializers.empty)
@@ -573,3 +585,28 @@ class TelegramAccountHealthSerializer(serializers.ModelSerializer):
 
     def get_risk_level(self, obj):
         return account_risk_level(obj)
+
+
+class AccountGGRRatingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AccountGGRRating
+        fields = (
+            "id",
+            "account",
+            "status",
+            "score",
+            "potential",
+            "label",
+            "survival_7d",
+            "survival_30d",
+            "median_lifetime_days",
+            "geo",
+            "similar_count",
+            "similar_params",
+            "factors",
+            "recommendations",
+            "analysis",
+            "error",
+            "created_at",
+        )
+        read_only_fields = fields

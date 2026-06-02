@@ -74,6 +74,11 @@ export default function AppShell({ children, userLabel }) {
           <span className="nav-icon">◌</span>Масові реакції
         </Link>
 
+        <div className="nav-section">Аналітика</div>
+        <Link href="/ggr" className={`nav-item${pathname === "/ggr" ? " active" : ""}`}>
+          <span className="nav-icon">⬡</span>GGR · Рейтинг
+        </Link>
+
         {/* Парсинг даних — collapsible group */}
         <button
           type="button"

@@ -925,6 +925,11 @@ function AccountDetailsModal({ account, proxies, initialTab = "profile", onClose
           <span className={`badge ${account.is_quarantined ? "amber" : "green"}`}>
             {account.is_quarantined ? quarantineLabel(account) : account.status}
           </span>
+          {account.ggr_score != null && (
+            <span className={`badge ${parseFloat(account.ggr_score) >= 7 ? "green" : parseFloat(account.ggr_score) >= 4 ? "amber" : "red"}`}>
+              GGR {parseFloat(account.ggr_score).toFixed(1)}
+            </span>
+          )}
         </div>
       </div>
 

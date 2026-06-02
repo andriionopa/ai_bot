@@ -155,3 +155,54 @@ class AccountHealthEvent(models.Model):
 
     def __str__(self) -> str:
         return f"{self.account_id}:{self.event_type}:{self.created_at.isoformat()}"
+
+
+class AccountGGRRating(models.Model):
+    class Label(models.TextChoices):
+        HIGH = "high", "Високий"
+        MEDIUM = "medium", "Середній"
+        LOW = "low", "Низький"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "В черзі"
+        RUNNING = "running", "Аналіз"
+        DONE = "done", "Готово"
+        FAILED = "failed", "Помилка"
+
+    account = models.ForeignKey(
+        TelegramAccount,
+        on_delete=models.CASCADE,
+        related_name="ggr_ratings",
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="ggr_ratings",
+    )
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+    score = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
+    potential = models.DecimalField(max_digits=4, decimal_places=1, null=True, blank=True)
+    label = models.CharField(max_length=16, choices=Label.choices, blank=True)
+    survival_7d = models.PositiveSmallIntegerField(null=True, blank=True)
+    survival_30d = models.PositiveSmallIntegerField(null=True, blank=True)
+    median_lifetime_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    geo = models.CharField(max_length=4, blank=True)
+    similar_count = models.PositiveIntegerField(null=True, blank=True)
+    similar_params = models.CharField(max_length=255, blank=True)
+    factors = models.JSONField(default=dict, blank=True)
+    recommendations = models.JSONField(default=dict, blank=True)
+    analysis = models.TextField(blank=True)
+    error = models.TextField(blank=True)
+    celery_task_id = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=("account", "created_at")),
+            models.Index(fields=("owner", "created_at")),
+        ]
+
+    def __str__(self) -> str:
+        return f"GGR#{self.id} account={self.account_id} score={self.score}"
