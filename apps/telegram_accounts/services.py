@@ -41,6 +41,7 @@ class ProxyCheckResult:
 class TelegramAuthFlow:
     account_id: int
     session_name: str
+    proxy_id: int | None
     client: Client
     loop: asyncio.AbstractEventLoop
     expires_at: datetime
@@ -566,6 +567,7 @@ def _get_auth_flow(account: TelegramAccount, *, reset: bool = False) -> Telegram
         reset
         or flow is None
         or flow.session_name != account.session_name
+        or flow.proxy_id != account.proxy_id
         or _flow_expired(flow)
     ):
         if flow is not None:
@@ -582,6 +584,7 @@ def _get_auth_flow(account: TelegramAccount, *, reset: bool = False) -> Telegram
         flow = TelegramAuthFlow(
             account_id=account.id,
             session_name=account.session_name,
+            proxy_id=account.proxy_id,
             client=client,
             loop=loop,
             expires_at=timezone.now() + AUTH_FLOW_TTL,
@@ -847,6 +850,10 @@ def resend_credentials_code(account: TelegramAccount) -> TelegramAccount:
         ]
     )
     remove_account_session_files(account.session_name)
+
+    # Refresh proxy from DB so the new client uses the current proxy, not a stale in-memory value.
+    account.refresh_from_db(fields=["proxy_id"])
+    account.__dict__.pop("proxy", None)
 
     try:
         async def send_code_operation(app):

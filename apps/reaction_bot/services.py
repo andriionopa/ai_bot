@@ -301,6 +301,9 @@ async def _react_in_channel(
     chat_title = getattr(chat, "title", source) or source
     available_emojis = [_clean_emoji(e) for e in (job.emojis or []) if e] or [_clean_emoji(e) for e in HARDCODED_EMOJIS]
 
+    prot_params = protection.protection_params(job)
+    profile_view_prob = float(prot_params.get("profile_view_prob", 0.0)) if prot_params else 0.0
+
     try:
         async for message in app.get_chat_history(chat.id, limit=limit):
             job_fresh = await sync_to_async(ReactionJob.objects.get)(pk=job.pk)
@@ -310,6 +313,10 @@ async def _react_in_channel(
                 break
             if random.random() > job.reaction_probability:
                 continue
+
+            # ai_protection: simulate post author profile view before reacting
+            if profile_view_prob and random.random() < profile_view_prob:
+                await protection.view_post_author(app, message, chat)
 
             post_text = (getattr(message, "text", "") or getattr(message, "caption", "") or "").strip()
 
@@ -499,8 +506,18 @@ async def _run_with_account(
             )
         effective_sources = effective_sources + sub_sources
 
+    params = protection.protection_params(job)
+    skip_prob = float(params.get("skip_probability", 0.0)) if params else 0.0
+
     total = 0
     for source in effective_sources:
+        if skip_prob and random.random() < skip_prob:
+            await async_log_reaction_event(
+                job, level=ReactionLog.Level.INFO, account=account,
+                message=f"{account.label}: ІІ захист — пропущено джерело {source}",
+                metadata={"source": source},
+            )
+            continue
         job_fresh = await sync_to_async(ReactionJob.objects.get)(pk=job.pk)
         if job_fresh.status != ReactionJob.Status.RUNNING:
             break
@@ -548,6 +565,19 @@ def run_reaction_job(job_id: int) -> ReactionJob:
     accounts = list(job.accounts.filter(is_attached=True, auth_state=TelegramAccount.AuthState.CONNECTED))
     if not accounts:
         raise RuntimeError("Немає валідних акаунтів для реакцій.")
+
+    if protection.in_quiet_hours(job):
+        log_reaction_event(job, level=ReactionLog.Level.INFO,
+            message=f"ІІ захист — тихі години, задачу відкладено ({protection.quiet_hours(job)})")
+        job.status = ReactionJob.Status.STOPPED
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "finished_at", "updated_at"])
+        return job
+
+    if job.ai_protection:
+        prot_params = protection.protection_params(job)
+        log_reaction_event(job, level=ReactionLog.Level.INFO,
+            message=f"ІІ захист включено • рівень {job.speed_mode} • пропуск {int(float(prot_params.get('skip_probability', 0)) * 100)}% джерел")
 
     sources = [str(s).strip() for s in (job.sources or []) if str(s).strip()]
     if not sources:

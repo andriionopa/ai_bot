@@ -24,6 +24,7 @@ from apps.channel_parser.models import (
     ParsedChannel,
 )
 from apps.realtime.logging import publish_log_event
+from apps.telegram_accounts import protection
 from apps.telegram_accounts.models import AccountHealthEvent, TelegramAccount
 from apps.telegram_accounts.services import get_account_runtime_block_reason, register_account_runtime_event, run_client_operation
 
@@ -60,17 +61,19 @@ def _random_delay(delay_range: tuple[float, float]) -> float:
 
 
 def parser_timing(job: ChannelParserJob) -> ParserTiming:
-    if job.ai_protection:
-        if job.speed_mode == ChannelParserJob.SpeedMode.FAST:
-            return ParserTiming(request_delay_range=(3.0, 14.0), channel_delay_range=(3.0, 14.0), history_limit=5, dialogs_limit=180)
+    if not job.ai_protection:
         if job.speed_mode == ChannelParserJob.SpeedMode.SAFE:
-            return ParserTiming(request_delay_range=(12.0, 60.0), channel_delay_range=(12.0, 60.0), history_limit=8, dialogs_limit=100)
-        return ParserTiming(request_delay_range=(7.0, 42.0), channel_delay_range=(7.0, 42.0), history_limit=6, dialogs_limit=140)
+            return ParserTiming(request_delay_range=(3.0, 6.0), channel_delay_range=(2.0, 4.0), history_limit=8, dialogs_limit=120)
+        if job.fast_mode or job.speed_mode == ChannelParserJob.SpeedMode.FAST:
+            return ParserTiming(request_delay_range=(0.5, 1.5), channel_delay_range=(0.25, 0.75), history_limit=5, dialogs_limit=220)
+        return ParserTiming(request_delay_range=(1.5, 4.0), channel_delay_range=(0.75, 2.0), history_limit=6, dialogs_limit=160)
+    params = protection.protection_params(job)
+    mult = float(params.get("delay_multiplier", 1.0))
+    if job.speed_mode == ChannelParserJob.SpeedMode.FAST:
+        return ParserTiming(request_delay_range=(3.0 * mult, 14.0 * mult), channel_delay_range=(3.0 * mult, 14.0 * mult), history_limit=5, dialogs_limit=180)
     if job.speed_mode == ChannelParserJob.SpeedMode.SAFE:
-        return ParserTiming(request_delay_range=(3.0, 6.0), channel_delay_range=(2.0, 4.0), history_limit=8, dialogs_limit=120)
-    if job.fast_mode or job.speed_mode == ChannelParserJob.SpeedMode.FAST:
-        return ParserTiming(request_delay_range=(0.5, 1.5), channel_delay_range=(0.25, 0.75), history_limit=5, dialogs_limit=220)
-    return ParserTiming(request_delay_range=(1.5, 4.0), channel_delay_range=(0.75, 2.0), history_limit=6, dialogs_limit=160)
+        return ParserTiming(request_delay_range=(12.0 * mult, 60.0 * mult), channel_delay_range=(12.0 * mult, 60.0 * mult), history_limit=8, dialogs_limit=100)
+    return ParserTiming(request_delay_range=(7.0 * mult, 42.0 * mult), channel_delay_range=(7.0 * mult, 42.0 * mult), history_limit=6, dialogs_limit=140)
 
 
 def build_search_queries(job: ChannelParserJob) -> list[str]:
@@ -375,9 +378,25 @@ async def _subscription_refs(app, timing: ParserTiming) -> set[object]:
 
 
 async def _parse_with_account(app, job: ChannelParserJob, account: TelegramAccount, queries: list[str], timing: ParserTiming) -> int:
+    if protection.in_quiet_hours(job):
+        await async_log_parser_event(
+            job, level=ChannelParserLog.Level.INFO, account=account,
+            message=f"{account.label}: ІІ захист — тихі години, парсинг відкладено",
+        )
+        return 0
+
+    params = protection.protection_params(job)
+    skip_prob = float(params.get("skip_probability", 0.0)) if params else 0.0
+
     found = 0
     seen_refs = set()
     subscribed_refs = await _subscription_refs(app, timing) if job.search_scope in {ChannelParserJob.SearchScope.GLOBAL, ChannelParserJob.SearchScope.BOTH} else set()
+
+    if job.ai_protection:
+        await async_log_parser_event(
+            job, level=ChannelParserLog.Level.INFO, account=account,
+            message=f"{account.label}: ІІ захист включено • рівень {job.speed_mode} • пропуск {int(skip_prob * 100)}%",
+        )
     await async_log_parser_event(job, level=ChannelParserLog.Level.INFO, account=account, message=f"{account.label}: запуск парсингу даних")
     for query in queries:
         if await async_job_result_count(job.id) >= job.result_limit:
@@ -404,6 +423,8 @@ async def _parse_with_account(app, job: ChannelParserJob, account: TelegramAccou
                 if chat_ref in seen_refs:
                     continue
                 seen_refs.add(chat_ref)
+                if skip_prob and random.random() < skip_prob:
+                    continue
                 scanned += 1
                 try:
                     data = await _inspect_channel(app, chat_ref, query=query, job=job, timing=timing)

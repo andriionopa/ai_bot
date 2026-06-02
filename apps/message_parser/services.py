@@ -19,6 +19,7 @@ from pyrogram.errors import FloodWait, RPCError
 from apps.channel_parser.models import ChannelCollectionTemplate
 from apps.message_parser.models import MessageParserJob, MessageParserLog, ParsedUser
 from apps.realtime.logging import publish_log_event
+from apps.telegram_accounts import protection
 from apps.telegram_accounts.models import AccountHealthEvent, TelegramAccount
 from apps.telegram_accounts.services import get_account_runtime_block_reason, register_account_runtime_event, run_client_operation
 
@@ -42,17 +43,19 @@ def _random_delay(delay_range: tuple[float, float]) -> float:
 
 
 def parser_timing(job: MessageParserJob) -> ParserTiming:
-    if job.ai_protection:
-        if job.speed_mode == MessageParserJob.SpeedMode.FAST:
-            return ParserTiming(request_delay_range=(3.0, 14.0), source_delay_range=(3.0, 14.0), progress_step=250)
+    if not job.ai_protection:
+        if job.fast_mode or job.speed_mode == MessageParserJob.SpeedMode.FAST:
+            return ParserTiming(request_delay_range=(0.5, 1.5), source_delay_range=(0.5, 1.0), progress_step=500)
         if job.speed_mode == MessageParserJob.SpeedMode.SAFE:
-            return ParserTiming(request_delay_range=(12.0, 60.0), source_delay_range=(12.0, 60.0), progress_step=150)
-        return ParserTiming(request_delay_range=(7.0, 42.0), source_delay_range=(7.0, 42.0), progress_step=200)
-    if job.fast_mode or job.speed_mode == MessageParserJob.SpeedMode.FAST:
-        return ParserTiming(request_delay_range=(0.5, 1.5), source_delay_range=(0.5, 1.0), progress_step=500)
+            return ParserTiming(request_delay_range=(2.0, 5.0), source_delay_range=(1.5, 3.0), progress_step=300)
+        return ParserTiming(request_delay_range=(1.0, 3.0), source_delay_range=(1.0, 2.0), progress_step=400)
+    params = protection.protection_params(job)
+    mult = float(params.get("delay_multiplier", 1.0))
+    if job.speed_mode == MessageParserJob.SpeedMode.FAST:
+        return ParserTiming(request_delay_range=(3.0 * mult, 14.0 * mult), source_delay_range=(3.0 * mult, 14.0 * mult), progress_step=250)
     if job.speed_mode == MessageParserJob.SpeedMode.SAFE:
-        return ParserTiming(request_delay_range=(2.0, 5.0), source_delay_range=(1.5, 3.0), progress_step=300)
-    return ParserTiming(request_delay_range=(1.0, 3.0), source_delay_range=(1.0, 2.0), progress_step=400)
+        return ParserTiming(request_delay_range=(12.0 * mult, 60.0 * mult), source_delay_range=(12.0 * mult, 60.0 * mult), progress_step=150)
+    return ParserTiming(request_delay_range=(7.0 * mult, 42.0 * mult), source_delay_range=(7.0 * mult, 42.0 * mult), progress_step=200)
 
 
 def log_parser_event(
@@ -330,6 +333,17 @@ async def _parse_source(app, job: MessageParserJob, account: TelegramAccount, so
 async def _parse_with_account(app, job: MessageParserJob, account: TelegramAccount, timing: ParserTiming) -> tuple[int, list[dict[str, object]]]:
     total_found = 0
     total_rows: list[dict[str, object]] = []
+
+    if protection.in_quiet_hours(job):
+        await async_log_parser_event(
+            job, level=MessageParserLog.Level.INFO, account=account,
+            message=f"{account.label}: ІІ захист — тихі години, парсинг відкладено",
+        )
+        return 0, []
+
+    params = protection.protection_params(job)
+    skip_prob = float(params.get("skip_probability", 0.0)) if params else 0.0
+
     await async_log_parser_event(
         job,
         level=MessageParserLog.Level.INFO,
@@ -341,9 +355,16 @@ async def _parse_with_account(app, job: MessageParserJob, account: TelegramAccou
             job,
             level=MessageParserLog.Level.INFO,
             account=account,
-            message=f"{account.label}: ІІ захист включено • рівень {job.speed_mode}",
+            message=f"{account.label}: ІІ захист включено • рівень {job.speed_mode} • пропуск {int(skip_prob * 100)}%",
         )
     for index, source_ref in enumerate(job.sources or [], start=1):
+        if skip_prob and random.random() < skip_prob:
+            await async_log_parser_event(
+                job, level=MessageParserLog.Level.INFO, account=account,
+                message=f"{account.label}: ІІ захист — пропущено чат {source_ref}",
+                metadata={"source": source_ref},
+            )
+            continue
         try:
             scanned, rows, source_title = await _parse_source(app, job, account, source_ref, timing)
         except FloodWait:
