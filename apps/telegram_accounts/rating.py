@@ -49,20 +49,37 @@ def _geo_from_phone(phone: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _read_session_date(session_name: str) -> datetime | None:
-    """Read the authorization date from the Pyrogram session SQLite file."""
+def _read_session_data(session_name: str) -> dict[str, object]:
+    """Read useful data from the Pyrogram session SQLite file."""
+    result: dict[str, object] = {
+        "session_date": None,
+        "peer_count": 0,
+        "last_peer_update": None,
+    }
     try:
         workdir = Path(settings.MEDIA_ROOT) / "telegram_runtime"
         path = workdir / f"{session_name}.session"
         if not path.exists():
-            return None
+            return result
         with sqlite3.connect(str(path)) as conn:
             row = conn.execute("SELECT date FROM sessions LIMIT 1").fetchone()
             if row and row[0]:
-                return datetime.fromtimestamp(int(row[0]), tz=dt_timezone.utc)
+                result["session_date"] = datetime.fromtimestamp(int(row[0]), tz=dt_timezone.utc)
+            try:
+                peer_row = conn.execute(
+                    "SELECT COUNT(*), MAX(last_update_on) FROM peers"
+                ).fetchone()
+                if peer_row:
+                    result["peer_count"] = int(peer_row[0] or 0)
+                    if peer_row[1]:
+                        result["last_peer_update"] = datetime.fromtimestamp(
+                            int(peer_row[1]), tz=dt_timezone.utc
+                        )
+            except Exception:
+                pass
     except Exception:
         pass
-    return None
+    return result
 
 
 def _estimate_age_from_user_id(user_id: int | None) -> int | None:
@@ -101,8 +118,9 @@ def _estimate_age_from_user_id(user_id: int | None) -> int | None:
 def _extract_features(account: TelegramAccount) -> dict[str, object]:
     now = timezone.now()
 
-    # Try real Telegram account age from session file, then user_id, then added_at
-    session_date = _read_session_date(account.session_name)
+    # Real Telegram account age
+    session_data = _read_session_data(account.session_name)
+    session_date = session_data["session_date"]
     if session_date:
         age_days = max(0, (now.replace(tzinfo=None) - session_date.replace(tzinfo=None)).days)
         age_source = "session_file"
@@ -115,10 +133,41 @@ def _extract_features(account: TelegramAccount) -> dict[str, object]:
             age_days = max(0, (now - account.created_at).days)
             age_source = "added_to_system"
 
-    events = list(account.health_events.order_by("-created_at")[:100])
+    # Peer count from session (organic activity indicator)
+    peer_count = session_data["peer_count"]
+    last_peer_update = session_data["last_peer_update"]
+    days_since_peer_activity = None
+    if last_peer_update:
+        days_since_peer_activity = max(0, (
+            now.replace(tzinfo=None) - last_peer_update.replace(tzinfo=None)
+        ).days)
+
+    events = list(account.health_events.order_by("-created_at")[:200])
     flood_waits = sum(1 for e in events if e.event_type == AccountHealthEvent.EventType.FLOOD_WAIT)
     spam_blocks = sum(1 for e in events if e.event_type == AccountHealthEvent.EventType.SPAM_BLOCK)
     successes = sum(1 for e in events if e.event_type == AccountHealthEvent.EventType.SUCCESS)
+
+    # Activity pattern over last 30 days
+    cutoff_30 = now - timedelta(days=30)
+    recent_events = [e for e in events if e.created_at >= cutoff_30]
+    active_days_last_30 = len({e.created_at.date() for e in recent_events if e.event_type == AccountHealthEvent.EventType.SUCCESS})
+
+    # Days since last recorded activity
+    days_since_last_success = None
+    if account.last_success_at:
+        days_since_last_success = max(0, (now - account.last_success_at).days)
+
+    # Activity pattern quality
+    if active_days_last_30 >= 20:
+        activity_pattern = "регулярна (20+ днів/місяць)"
+    elif active_days_last_30 >= 10:
+        activity_pattern = "помірна (10-20 днів/місяць)"
+    elif active_days_last_30 >= 3:
+        activity_pattern = "нерегулярна (3-10 днів/місяць)"
+    elif active_days_last_30 >= 1:
+        activity_pattern = "рідкісна (1-2 дні/місяць)"
+    else:
+        activity_pattern = "відсутня (0 днів/місяць)"
 
     proxy = account.proxy
     proxy_ok = bool(proxy and proxy.status == "healthy")
@@ -152,6 +201,11 @@ def _extract_features(account: TelegramAccount) -> dict[str, object]:
         "device_model": device,
         "system_version": system,
         "device_is_risky": device_is_risky,
+        "peer_count": peer_count,
+        "days_since_peer_activity": days_since_peer_activity,
+        "active_days_last_30": active_days_last_30,
+        "days_since_last_success": days_since_last_success,
+        "activity_pattern": activity_pattern,
         "has_proxy": bool(proxy),
         "proxy_healthy": proxy_ok,
         "proxy_geo": proxy_geo,
@@ -252,6 +306,26 @@ def _build_user_message(features: dict[str, object]) -> str:
 
     device_note = " ⚠ АВТОМАТИЗАЦІЙНИЙ ВІДБИТОК" if features.get("device_is_risky") else ""
 
+    peer_info = f"{features.get('peer_count', 0)} унікальних чатів/контактів"
+    if features.get('days_since_peer_activity') is not None:
+        peer_info += f", остання активність {features['days_since_peer_activity']} днів тому"
+    else:
+        peer_info += ", дата останньої активності невідома"
+
+    inactivity = ""
+    if features.get("days_since_last_success") is not None:
+        d = features["days_since_last_success"]
+        if d == 0:
+            inactivity = "активний сьогодні"
+        elif d <= 3:
+            inactivity = f"активний {d} дн. тому"
+        elif d <= 14:
+            inactivity = f"неактивний {d} днів"
+        else:
+            inactivity = f"⚠ неактивний {d} днів — довга бездіяльність"
+    else:
+        inactivity = "немає даних"
+
     return (
         f"ПАРАМЕТРИ TELEGRAM АКАУНТА (відповідай виключно УКРАЇНСЬКОЮ мовою):\n\n"
         f"- Вік акаунта: {features['age_days']} днів{age_note}\n"
@@ -261,7 +335,10 @@ def _build_user_message(features: dict[str, object]) -> str:
         f"- Гео (телефон): {features['phone_prefix_geo']} | Гео проксі: {features['proxy_geo'] or 'н/д'}\n"
         f"- Профіль: username={features['has_username']}, ім'я={features['has_name']}, "
         f"телефон={features['has_phone']} (повнота {features['profile_completeness']}/4)\n"
-        f"- Події здоров'я (останні 100): {features['flood_waits']} flood wait, "
+        f"- Контакти/чати в сесії: {peer_info}\n"
+        f"- Активність (30 днів): {features.get('active_days_last_30', 0)} активних днів — {features.get('activity_pattern', 'н/д')}\n"
+        f"- Остання активність: {inactivity}\n"
+        f"- Події здоров'я (останні 200): {features['flood_waits']} flood wait, "
         f"{features['spam_blocks']} spam block, {features['successes']} успішних\n"
         f"- Внутрішній health score: {features['health_score']}/100\n"
         f"- На карантині: {features['is_quarantined']}\n"

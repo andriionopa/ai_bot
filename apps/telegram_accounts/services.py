@@ -239,6 +239,28 @@ def telegram_runtime_workdir() -> Path:
     return workdir
 
 
+def _app_version_for_device(device_model: str) -> str:
+    """Return a plausible Telegram app version matching the device type."""
+    d = device_model.lower()
+    if "iphone" in d or "ios" in d:
+        return "10.14.5"   # Telegram iOS
+    if "samsung" in d or "pixel" in d or "xiaomi" in d or "android" in d or "poco" in d or "oneplus" in d or "motorola" in d:
+        return "10.14.5"   # Telegram Android
+    return "4.16.8"        # Telegram Desktop fallback
+
+
+def _lang_for_geo(phone_number: str) -> str:
+    """Return a plausible lang_code based on phone prefix."""
+    digits = (phone_number or "").lstrip("+").lstrip("0")
+    if digits.startswith("380"):
+        return "uk"
+    if digits.startswith("7") or digits.startswith("375"):
+        return "ru"
+    if digits.startswith("48"):
+        return "pl"
+    return "en"
+
+
 def build_account_client(account: TelegramAccount) -> Client:
     if not settings.TELEGRAM_API_ID or not settings.TELEGRAM_API_HASH:
         raise RuntimeError("TELEGRAM_API_ID or TELEGRAM_API_HASH is not configured.")
@@ -247,6 +269,15 @@ def build_account_client(account: TelegramAccount) -> Client:
         system_version=account.system_version,
         randomize_device_profile=account.randomize_device_profile,
     )
+    # Persist chosen profile so device stays consistent across connections
+    if device_model != account.device_model or system_version != account.system_version:
+        TelegramAccount.objects.filter(pk=account.pk).update(
+            device_model=device_model,
+            system_version=system_version,
+        )
+        account.device_model = device_model
+        account.system_version = system_version
+
     return Client(
         name=account.session_name,
         api_id=settings.TELEGRAM_API_ID,
@@ -255,8 +286,8 @@ def build_account_client(account: TelegramAccount) -> Client:
         proxy=build_pyrogram_proxy(account.proxy),
         device_model=device_model,
         system_version=system_version,
-        app_version="0.1.0",
-        lang_code="en",
+        app_version=_app_version_for_device(device_model),
+        lang_code=_lang_for_geo(account.phone_number),
         no_updates=True,
     )
 
