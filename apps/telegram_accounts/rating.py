@@ -344,6 +344,20 @@ def _format_live_data(live: dict) -> str:
     if live.get("settings_blocked"):
         lines.append("  • ⚠ Акаунт заблокував відправника")
 
+    # SpamBot result
+    spambot = live.get("spambot_status")
+    if spambot == "clean":
+        lines.append("  • @SpamBot: акаунт чистий — обмежень немає ✓")
+    elif spambot == "spam_blocked":
+        response_preview = live.get("spambot_response", "")[:120]
+        lines.append(f"  • 🚨 @SpamBot: АКАУНТ У СПАМ-БАЗІ TELEGRAM — {response_preview}")
+    elif spambot == "unknown":
+        lines.append(f"  • @SpamBot: невідомий статус — {live.get('spambot_response', '')[:100]}")
+    elif spambot == "no_response":
+        lines.append("  • @SpamBot: немає відповіді")
+    elif spambot == "check_failed":
+        lines.append(f"  • @SpamBot: помилка перевірки — {live.get('spambot_error', '')[:80]}")
+
     return "\n".join(lines) + "\n\n"
 
 
@@ -541,6 +555,36 @@ async def _fetch_live_telegram_data(app) -> dict:
         info["bio_preview"] = (about or "")[:80] if about else ""
     except Exception:
         info["has_bio"] = None  # None = fetch failed (distinct from False = actually empty)
+
+    # SpamBot check — real Telegram spam status via @SpamBot
+    import asyncio
+    try:
+        await app.send_message("SpamBot", "/start")
+        await asyncio.sleep(3)
+        response_text = ""
+        async for msg in app.get_chat_history("SpamBot", limit=3):
+            if msg.from_user and msg.from_user.is_bot and msg.text:
+                response_text = msg.text
+                break
+        if response_text:
+            txt = response_text.lower()
+            # Detect clean status (multi-language keywords)
+            clean_keywords = ["no limits", "не обмежено", "не має обмежень", "good news",
+                              "хороша новина", "не заблоковано", "without limitations"]
+            spam_keywords = ["limited", "обмежено", "spam", "спам", "заблоковано",
+                             "restricted", "unfortunately", "на жаль"]
+            if any(k in txt for k in clean_keywords):
+                info["spambot_status"] = "clean"
+            elif any(k in txt for k in spam_keywords):
+                info["spambot_status"] = "spam_blocked"
+            else:
+                info["spambot_status"] = "unknown"
+            info["spambot_response"] = response_text[:300]
+        else:
+            info["spambot_status"] = "no_response"
+    except Exception as e:
+        info["spambot_status"] = "check_failed"
+        info["spambot_error"] = str(e)
 
     # Dialog count — real usage indicator
     try:
