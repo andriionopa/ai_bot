@@ -309,10 +309,17 @@ class TelegramAccountSerializer(serializers.ModelSerializer):
         return action
 
     def get_ggr_score(self, obj):
+        # Use DB annotation if available (avoids N+1 query)
+        annotated = getattr(obj, "_ggr_score", "__missing__")
+        if annotated != "__missing__":
+            return str(annotated) if annotated is not None else None
         rating = obj.ggr_ratings.filter(status="done").order_by("-created_at").first()
         return str(rating.score) if rating else None
 
     def get_ggr_label(self, obj):
+        annotated = getattr(obj, "_ggr_label", "__missing__")
+        if annotated != "__missing__":
+            return annotated
         rating = obj.ggr_ratings.filter(status="done").order_by("-created_at").first()
         return rating.label if rating else None
 

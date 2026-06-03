@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from django.db.models import Count, Exists, OuterRef, Q
+from django.db.models import Count, Exists, OuterRef, Q, Subquery
 from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
@@ -103,9 +103,19 @@ class TelegramAccountViewSet(OwnerQuerysetMixin, viewsets.ModelViewSet):
             accounts=OuterRef("pk"),
             status=MessageParserJob.Status.RUNNING,
         )
+        latest_ggr = AccountGGRRating.objects.filter(
+            account=OuterRef("pk"),
+            status="done",
+        ).order_by("-created_at").values("score")[:1]
+        latest_ggr_label = AccountGGRRating.objects.filter(
+            account=OuterRef("pk"),
+            status="done",
+        ).order_by("-created_at").values("label")[:1]
         return super().get_queryset().annotate(
             _has_running_warmup=Exists(running_warmup),
             _has_running_parsing=Exists(running_parsing) | Exists(running_message_parsing),
+            _ggr_score=Subquery(latest_ggr),
+            _ggr_label=Subquery(latest_ggr_label),
         )
 
     def get_parsers(self):

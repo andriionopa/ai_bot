@@ -127,3 +127,24 @@ def release_expired_quarantines_task() -> int:
         if release_expired_quarantine(account):
             released += 1
     return released
+
+
+@shared_task
+def cleanup_detached_session_files_task(inactive_days: int = 30) -> dict[str, int]:
+    """Delete session files for accounts detached more than `inactive_days` ago.
+    Keeps the DB record but frees disk space from orphaned .session files."""
+    from django.utils import timezone as tz
+    from datetime import timedelta
+
+    cutoff = tz.now() - timedelta(days=inactive_days)
+    stale_accounts = TelegramAccount.objects.filter(
+        is_attached=False,
+        detached_at__lt=cutoff,
+    ).only("id", "session_name")
+
+    removed = 0
+    for account in stale_accounts:
+        remove_account_session_files(account.session_name)
+        removed += 1
+
+    return {"removed_session_files": removed, "inactive_days": inactive_days}
