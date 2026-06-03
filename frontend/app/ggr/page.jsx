@@ -4,6 +4,16 @@ import { useEffect, useRef, useState } from "react";
 import AppShell from "@/components/AppShell";
 import { apiFetch, normalizeApiError } from "@/lib/api";
 
+const FACTORS = [
+  { key: "age",             label: "Вік",                weight: 18, desc: "Вік акаунта, дата реєстрації, дні активності." },
+  { key: "identity",        label: "Ідентичність",        weight: 16, desc: "Fingerprint пристрою, ім'я, преміум, tdata-маркери." },
+  { key: "network",         label: "Мережа",              weight: 15, desc: "Сусіди по підмережі, проксі, провенанс IP." },
+  { key: "behavior",        label: "Поведінка",           weight: 14, desc: "Дій за весь час, у перші 24 години, заповненість профілю." },
+  { key: "block_history",   label: "Історія блокувань",  weight: 13, desc: "Поточний статус та події спамблоку за 30 днів." },
+  { key: "recovery_cycles", label: "Цикли відновлення",  weight: 12, desc: "Скільки разів акаунт помирав і повертався в роботу." },
+  { key: "origin",          label: "Походження",          weight: 12, desc: "Країна, мова, проксі-гео, патерн завантаження." },
+];
+
 const BASE = "/api/v1/accounts/ggr";
 
 function scoreColor(score) {
@@ -141,6 +151,7 @@ function AccountCard({ account, ggr, onCheck, onCancel }) {
 }
 
 function DetailModal({ ggr, account, onClose }) {
+  const [expandedFactor, setExpandedFactor] = useState(null);
   if (!ggr || ggr.status !== "done") return null;
   const factors = ggr.factors || {};
   const rec = ggr.recommendations || {};
@@ -191,28 +202,77 @@ function DetailModal({ ggr, account, onClose }) {
           </div>
         </div>
 
-        {/* Factors */}
-        {Object.keys(factors).length > 0 && (
-          <div style={{ marginBottom: 20 }}>
-            <div className="section-title" style={{ marginBottom: 12 }}>
-              <span className="section-icon blue">◈</span>
-              <h4 style={{ margin: 0 }}>Деталі оцінки</h4>
-            </div>
-            {Object.entries(factors).map(([key, val]) => {
-              const pct = Math.round((parseFloat(val) / 10) * 100);
-              const labels = { age: "Вік акаунта", device: "Пристрій", proxy: "Проксі", profile: "Профіль", health_history: "Історія здоров'я", registration: "Реєстрація" };
-              return (
-                <div key={key} style={{ marginBottom: 8 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
-                    <span>{labels[key] || key}</span>
-                    <b style={{ color: scoreColor(val) }}>{parseFloat(val).toFixed(1)}</b>
-                  </div>
-                  <ScoreBar score={val} />
-                </div>
-              );
-            })}
+        {/* Factors — 7-factor breakdown */}
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "var(--muted)", textTransform: "uppercase" }}>ДЕТАЛІ ОЦІНКИ</span>
+            <span style={{ background: "rgba(255,255,255,0.12)", borderRadius: 10, padding: "1px 7px", fontSize: 11, fontWeight: 700 }}>{FACTORS.length}</span>
           </div>
-        )}
+          {FACTORS.map((f) => {
+            const raw = factors[f.key];
+            const score = raw == null ? null : typeof raw === "object" ? raw.score : raw;
+            const details = typeof raw === "object" ? (raw.details || []) : [];
+            const isExpanded = expandedFactor === f.key;
+            const pct = score != null ? Math.round((parseFloat(score) / 10) * 100) : 0;
+            const dotColor = score == null ? "var(--muted)" : scoreColor(score);
+
+            return (
+              <div key={f.key} style={{ borderBottom: "1px solid var(--line)", paddingBottom: 12, marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                  {/* Status dot */}
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor, marginTop: 6, flexShrink: 0 }} />
+
+                  {/* Name + desc */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                      <span style={{ fontWeight: 700, fontSize: 13 }}>{f.label}</span>
+                      <span style={{ background: "rgba(255,255,255,0.1)", borderRadius: 8, padding: "1px 6px", fontSize: 10, fontWeight: 600, color: "var(--muted)" }}>{f.weight}%</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.4 }}>{f.desc}</div>
+                  </div>
+
+                  {/* Score + bar + expand */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                    {/* Progress bar */}
+                    <div style={{ width: 72, height: 5, borderRadius: 3, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                      <div style={{ width: `${pct}%`, height: "100%", background: dotColor, borderRadius: 3, transition: "width 0.4s" }} />
+                    </div>
+
+                    {/* Score badge */}
+                    {score != null ? (
+                      <span style={{ fontSize: 13, fontWeight: 800, color: scoreColor(score), minWidth: 28, textAlign: "right" }}>
+                        {parseFloat(score).toFixed(1)}
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "var(--muted)", minWidth: 28, textAlign: "right" }}>—</span>
+                    )}
+
+                    {/* Expand toggle */}
+                    <button
+                      type="button"
+                      onClick={() => setExpandedFactor(isExpanded ? null : f.key)}
+                      style={{ background: "none", border: "none", cursor: details.length > 0 ? "pointer" : "default", color: details.length > 0 ? "var(--text)" : "var(--muted)", fontSize: 11, padding: "2px 4px", opacity: details.length > 0 ? 1 : 0.4, whiteSpace: "nowrap" }}
+                    >
+                      {isExpanded ? "▾ Деталі" : "▸ Деталі"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Expanded details */}
+                {isExpanded && details.length > 0 && (
+                  <div style={{ marginLeft: 18, marginTop: 8, padding: "8px 12px", background: "rgba(255,255,255,0.03)", borderRadius: 8, borderLeft: `2px solid ${dotColor}` }}>
+                    {details.map((d, i) => (
+                      <div key={i} style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6, display: "flex", gap: 6 }}>
+                        <span style={{ color: dotColor, flexShrink: 0 }}>•</span>
+                        <span>{d}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
 
         {/* Recommendations */}
         <div className="dashed-panel" style={{ marginBottom: 20 }}>

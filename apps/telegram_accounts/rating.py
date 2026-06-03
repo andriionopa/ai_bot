@@ -246,7 +246,7 @@ def _extract_features(account: TelegramAccount) -> dict[str, object]:
 
 _SYSTEM_PROMPT = """Ти — аналітик якості Telegram акаунтів для автоматизації. На основі параметрів акаунта видай JSON-рейтинг.
 
-Поверни ТІЛЬКИ валідний JSON у точно такій структурі (без markdown, без пояснень):
+Поверни ТІЛЬКИ валідний JSON без markdown та без пояснень:
 {
   "score": <float 1.0-10.0>,
   "potential": <float 1.0-10.0>,
@@ -258,51 +258,52 @@ _SYSTEM_PROMPT = """Ти — аналітик якості Telegram акаунт
   "similar_count": <int>,
   "similar_params": "<стислий опис схожих акаунтів українською>",
   "factors": {
-    "age": <float 0-10>,
-    "device": <float 0-10>,
-    "proxy": <float 0-10>,
-    "profile": <float 0-10>,
-    "health_history": <float 0-10>,
-    "registration": <float 0-10>
+    "age":             {"score": <float 0-10>, "details": [<2-4 конкретних рядки українською>]},
+    "identity":        {"score": <float 0-10>, "details": [<2-4 конкретних рядки українською>]},
+    "network":         {"score": <float 0-10>, "details": [<2-4 конкретних рядки українською>]},
+    "behavior":        {"score": <float 0-10>, "details": [<2-4 конкретних рядки українською>]},
+    "block_history":   {"score": <float 0-10>, "details": [<2-4 конкретних рядки українською>]},
+    "recovery_cycles": {"score": <float 0-10>, "details": [<1-3 конкретних рядки українською>]},
+    "origin":          {"score": <float 0-10>, "details": [<2-4 конкретних рядки українською>]}
   },
   "recommendations": {
-    "safe_modules": [<список рядків українською>],
-    "caution_modules": [<список рядків українською>],
-    "avoid": [<список рядків українською>],
+    "safe_modules": [<рядки українською>],
+    "caution_modules": [<рядки українською>],
+    "avoid": [<рядки українською>],
     "next_check_days": <int>,
     "warmup_needed": <bool>,
     "expected_lifetime_days": <int>
   },
-  "analysis": "<2-3 речення пояснення рейтингу українською мовою>"
+  "analysis": "<2-3 речення пояснення рейтингу українською>"
 }
 
-Правила оцінки:
-- score: загальна якість акаунта для автоматизації (стійкість до бану, довговічність)
-- potential: наскільки добре він може працювати ЯКЩО виживе
-- label: high=7+, medium=4-7, low<4
-- survival_7d/30d: % шанс що акаунт залишиться живим і придатним через 7/30 днів при помірній автоматизації
-- median_lifetime_days: очікувана кількість днів до першого серйозного обмеження
-- factors: субоцінки що пояснюють загальний score
-- safe_modules: модулі які безпечно запускати (використовуй: нейрокоментинг, реакції, прогрів, парсинг)
-- caution_modules: модулі що потребують обмеженого навантаження
-- avoid: конкретні ризиковані дії яких треба уникати
-- warmup_needed: чи рекомендується прогрів 3-7 днів перед автоматизацією
-- Вік акаунта >2 років значно підвищує score. Відсутність проксі і device-fingerprint типу автоматизації знижує його.
+Правила оцінки 7 факторів (вага у загальному score):
+• age (18%) — вік акаунта: >5 років=9-10, 3-5 р=7-9, 1-3 р=5-7, 6-12 міс=3-5, <6 міс=1-3.
+  details: [точний вік у днях/роках, оцінена дата реєстрації, активних днів у системі за 30 днів]
+
+• identity (16%) — fingerprint+профіль: реальний Android/iOS без tdata-маркерів=7-10, підозрілий пристрій=1-5.
+  КРИТИЧНО: якщо гео НОРМАЛЬНЕ (UA/EU/US) але пристрій підозрілий — обов'язково вказати "⚠ Нормальне гео але підозрілий fingerprint".
+  details: [пристрій та ОС, username/ім'я статус, premium статус, tdata/автоматизаційні маркери]
+
+• network (15%) — проксі+IP: резидентський proxy здоровий=8-10, немає proxy=4-6, proxy нездоровий=2-4.
+  details: [наявність та тип proxy, гео proxy vs гео телефону, ризик прямого IP для автоматизації]
+
+• behavior (14%) — активність: >100 операцій=8-10, 10-100=5-7, 1-10=3-5, 0=2-4.
+  details: [кількість успішних операцій за весь час, коли остання дія, заповненість профілю, кількість діалогів]
+
+• block_history (13%) — блокування: 0 подій=9-10, 1-3=6-8, 4-10=3-6, >10=1-3.
+  details: [flood wait загалом, spam block загалом, health score, кількість подій за 30 днів]
+
+• recovery_cycles (12%) — цикли: 0 спамблоків=10, 1=7, 2-3=4-6, >3=1-3.
+  details: [скільки разів отримував spam block, чи зараз на карантині, поточний статус]
+
+• origin (12%) — походження: відомий ринок+відповідне гео=8-10, невідповідність=4-6, підозріле=1-4.
+  details: [країна по номеру телефону, гео proxy, джерело авторизації credentials/session, патерн реєстрації]
+
+Загальний score = age×0.18 + identity×0.16 + network×0.15 + behavior×0.14 + block_history×0.13 + recovery_cycles×0.12 + origin×0.12
+label: high≥7.0, medium 4.0-6.9, low<4.0
+safe_modules: використовуй назви: нейрокоментинг, реакції, прогрів, парсинг каналів, парсинг повідомлень
 """
-
-_USER_TEMPLATE = """Account parameters:
-- Age: {age_days} days old
-- Device: {device_model} / {system_version}
-- Proxy: {"assigned and healthy" if has_proxy and proxy_healthy else "assigned but unhealthy" if has_proxy else "no proxy"}
-- Geo (phone): {phone_prefix_geo} | Proxy geo: {proxy_geo or "n/a"}
-- Profile: username={has_username}, name={has_name}, phone={has_phone} (completeness {profile_completeness}/3)
-- Health events (last 100): {flood_waits} flood waits, {spam_blocks} spam blocks, {successes} successes
-- Internal health score: {health_score}/100
-- Quarantined: {is_quarantined}
-- Connected: {is_connected}
-- Auth source: {auth_source}
-
-Rate this account."""
 
 
 def _format_live_data(live: dict) -> str:
@@ -329,7 +330,9 @@ def _format_live_data(live: dict) -> str:
         lines.append("  • 🚨 ПОЗНАЧЕНИЙ ЯК ФЕЙК")
 
     lines.append(f"  • Telegram Premium: {'так ✓' if live.get('is_premium') else 'ні'}")
-    lines.append(f"  • Біографія (bio): {'є ✓' if live.get('has_bio') else 'відсутня'}")
+    has_bio = live.get("has_bio")
+    bio_str = "є ✓" if has_bio else ("не вдалось отримати" if has_bio is None else "відсутня")
+    lines.append(f"  • Біографія (bio): {bio_str}")
 
     dialogs = live.get("dialog_sample")
     if dialogs is not None:
@@ -358,7 +361,17 @@ def _build_user_message(features: dict[str, object]) -> str:
         "added_to_system": " (дата додавання в систему — НЕ реальний вік акаунта!)",
     }.get(features.get("age_source", ""), "")
 
-    device_note = " ⚠ АВТОМАТИЗАЦІЙНИЙ ВІДБИТОК" if features.get("device_is_risky") else ""
+    device_is_risky = features.get("device_is_risky", False)
+    device_note = " ⚠ АВТОМАТИЗАЦІЙНИЙ ВІДБИТОК" if device_is_risky else ""
+
+    # Device-geo mismatch: normal geo but suspicious device — explicit critical warning
+    phone_geo = features.get("phone_prefix_geo", "")
+    normal_geos = {"UA", "PL", "DE", "GB", "US", "FR", "IT", "ES", "NL", "CA", "AU"}
+    device_geo_mismatch = (
+        f"\n🚨 КРИТИЧНО: Гео акаунта ({phone_geo}) нормальне, але пристрій має ознаки автоматизації/tdata — "
+        f"це підвищує ризик виявлення Telegram!"
+        if device_is_risky and phone_geo in normal_geos else ""
+    )
 
     # Last activity via our system
     inactivity = "немає даних"
@@ -374,41 +387,52 @@ def _build_user_message(features: dict[str, object]) -> str:
             inactivity = f"⚠ не використовувався {d} днів через систему"
 
     successes = features['successes']
-    sys_activity = (
-        f"{successes} успішних операцій через систему"
-        if successes > 0
-        else "ще не використовувався через систему автоматизації"
-    )
+    spam_blocks = features['spam_blocks']
+    flood_waits = features['flood_waits']
 
-    # Peers — Pyrogram local cache, NOT real Telegram contacts
+    # Peer count from local Pyrogram cache
     peer_count = features.get('peer_count', 0)
     peer_note = (
-        f"{peer_count} пірів у Pyrogram-кеші сесії"
+        f"{peer_count} пірів у Pyrogram-кеші"
         if peer_count > 0
-        else "Pyrogram-кеш порожній (акаунт ще не виконував дій через нашу систему — це НЕ означає відсутність активності в реальному Telegram)"
+        else "Pyrogram-кеш порожній (не означає відсутність активності в реальному Telegram)"
     )
+
+    # Age in years for readability
+    age_days = features['age_days']
+    age_years_note = f" (~{age_days // 365} р. {age_days % 365} дн.)" if age_days >= 365 else ""
 
     return (
         f"ПАРАМЕТРИ TELEGRAM АКАУНТА (відповідай виключно УКРАЇНСЬКОЮ мовою):\n\n"
-        f"- Вік акаунта: {features['age_days']} днів{age_note}\n"
+        f"=== ВІК (age) ===\n"
+        f"- Вік акаунта: {age_days} днів{age_years_note}{age_note}\n"
         f"- Telegram User ID: {features.get('telegram_user_id') or 'невідомо'}\n"
+        f"- Активних днів у системі (30д): {features.get('active_days_last_30', 0)} — {features.get('activity_pattern', 'н/д')}\n"
+        f"\n=== ІДЕНТИЧНІСТЬ (identity) ===\n"
         f"- Пристрій: {features['device_model']} / {features['system_version']}{device_note}\n"
-        f"- Проксі: {proxy_str}\n"
-        f"- Гео (телефон): {features['phone_prefix_geo']} | Гео проксі: {features['proxy_geo'] or 'н/д'}\n"
         f"- Профіль: username={features['has_username']}, ім'я={features['has_name']}, "
         f"телефон={features['has_phone']} (повнота {features['profile_completeness']}/4)\n"
-        f"- Активність через систему: {sys_activity}\n"
-        f"- Остання дія: {inactivity}\n"
-        f"- Активних днів у системі (30д): {features.get('active_days_last_30', 0)} — {features.get('activity_pattern', 'н/д')}\n"
         f"- Кеш сесії: {peer_note}\n"
-        f"- Flood wait: {features['flood_waits']} | Spam block: {features['spam_blocks']} | Health: {features['health_score']}/100\n"
+        f"{device_geo_mismatch}\n"
+        f"\n=== МЕРЕЖА (network) ===\n"
+        f"- Проксі: {proxy_str}\n"
+        f"- Гео (телефон): {phone_geo} | Гео проксі: {features['proxy_geo'] or 'н/д'}\n"
+        f"\n=== ПОВЕДІНКА (behavior) ===\n"
+        f"- Успішних операцій через систему: {successes}\n"
+        f"- Остання дія: {inactivity}\n"
+        f"- Підключений зараз: {features['is_connected']}\n"
+        f"\n=== ІСТОРІЯ БЛОКУВАНЬ (block_history) ===\n"
+        f"- Flood wait: {flood_waits} | Spam block: {spam_blocks} | Health: {features['health_score']}/100\n"
         f"- На карантині: {features['is_quarantined']}\n"
-        f"- Підключений: {features['is_connected']}\n"
-        f"- Джерело авторизації: {features['auth_source']}\n\n"
-        f"ВАЖЛИВО: Pyrogram-кеш порожній НЕ означає що акаунт неактивний — він може активно "
-        f"використовуватись в реальному Telegram. Оцінюй тільки по наявних даних.\n\n"
-        f"{_format_live_data(features.get('live', {}))}"
-        f"Оціни цей акаунт. ВСІ текстові поля JSON ОБОВ'ЯЗКОВО українською мовою."
+        f"\n=== ЦИКЛИ ВІДНОВЛЕННЯ (recovery_cycles) ===\n"
+        f"- Кількість spam block подій: {spam_blocks}\n"
+        f"- На карантині зараз: {features['is_quarantined']}\n"
+        f"\n=== ПОХОДЖЕННЯ (origin) ===\n"
+        f"- Країна по номеру телефону: {phone_geo}\n"
+        f"- Гео проксі: {features['proxy_geo'] or 'відсутнє'}\n"
+        f"- Джерело авторизації: {features['auth_source']}\n"
+        f"\n{_format_live_data(features.get('live', {}))}"
+        f"Оціни цей акаунт за 7 факторами. ВСІ текстові поля JSON ОБОВ'ЯЗКОВО українською мовою."
     )
 
 
@@ -430,7 +454,7 @@ def _call_ai(features: dict[str, object]) -> dict[str, object]:
                 {"role": "user", "content": _build_user_message(features)},
             ],
             "temperature": 0.0,
-            "max_tokens": 800,
+            "max_tokens": 1600,
             "stream": False,
         },
         timeout=60,
@@ -451,8 +475,7 @@ def _call_ai(features: dict[str, object]) -> dict[str, object]:
 
 
 async def _fetch_live_telegram_data(app) -> dict:
-    """Connect to Telegram and pull real account signals: status, restrictions,
-    dialog count, bio, premium flag. Best-effort — never raises."""
+    """Connect to Telegram and pull real account signals. Best-effort — never raises."""
     info: dict[str, object] = {}
     try:
         me = await app.get_me()
@@ -462,56 +485,64 @@ async def _fetch_live_telegram_data(app) -> dict:
         info["is_premium"] = bool(getattr(me, "is_premium", False))
         info["restriction_reasons"] = [r.reason for r in (me.restrictions or [])]
 
-        # Last seen / online status
+        # Status — Pyrogram 2.x uses pyrogram.enums.UserStatus enum; offline timestamp is user.last_online_date
+        from pyrogram import enums as tg_enums
         status = getattr(me, "status", None)
-        if status is None:
-            info["last_seen"] = "невідомо (приватність)"
-            info["last_seen_days"] = None
-        else:
-            stype = type(status).__name__
-            if stype == "UserStatusOnline":
-                info["last_seen"] = "онлайн зараз"
-                info["last_seen_days"] = 0
-            elif stype == "UserStatusOffline" and getattr(status, "was_online", None):
-                was = status.was_online
-                if hasattr(was, "tzinfo"):
-                    if was.tzinfo is None:
-                        was = was.replace(tzinfo=dt_timezone.utc)
-                    days = max(0, (datetime.now(tz=dt_timezone.utc) - was).days)
+        if status == tg_enums.UserStatus.ONLINE:
+            info["last_seen"] = "онлайн зараз"
+            info["last_seen_days"] = 0
+        elif status == tg_enums.UserStatus.OFFLINE:
+            was = getattr(me, "last_online_date", None)
+            if was:
+                if hasattr(was, "tzinfo") and was.tzinfo is None:
+                    was = was.replace(tzinfo=dt_timezone.utc)
+                total_secs = (datetime.now(tz=dt_timezone.utc) - was).total_seconds()
+                hrs = max(0, int(total_secs // 3600))
+                days = max(0, int(total_secs // 86400))
+                if hrs < 1:
+                    info["last_seen"] = "онлайн менше години тому"
+                elif hrs < 24:
+                    info["last_seen"] = f"онлайн {hrs} год. тому"
                 else:
-                    days = None
-                info["last_seen"] = f"офлайн {days} дн. тому" if days is not None else "офлайн"
+                    info["last_seen"] = f"онлайн {days} дн. тому"
                 info["last_seen_days"] = days
-            elif stype == "UserStatusRecently":
-                info["last_seen"] = "нещодавно (< 2 тижні)"
-                info["last_seen_days"] = 7
-            elif stype == "UserStatusLastWeek":
-                info["last_seen"] = "протягом тижня"
-                info["last_seen_days"] = 7
-            elif stype == "UserStatusLastMonth":
-                info["last_seen"] = "протягом місяця"
-                info["last_seen_days"] = 20
             else:
-                info["last_seen"] = f"давно ({stype})"
-                info["last_seen_days"] = 60
+                info["last_seen"] = "офлайн"
+                info["last_seen_days"] = None
+        elif status == tg_enums.UserStatus.RECENTLY:
+            info["last_seen"] = "нещодавно (до 2 тижнів)"
+            info["last_seen_days"] = 3
+        elif status == tg_enums.UserStatus.LAST_WEEK:
+            info["last_seen"] = "протягом тижня"
+            info["last_seen_days"] = 7
+        elif status == tg_enums.UserStatus.LAST_MONTH:
+            info["last_seen"] = "протягом місяця"
+            info["last_seen_days"] = 20
+        elif status == tg_enums.UserStatus.LONG_AGO:
+            info["last_seen"] = "давно (більше місяця)"
+            info["last_seen_days"] = 60
+        else:
+            # None (bot) or unknown — session connected = recently active
+            info["last_seen"] = "активний (сесія підключена)"
+            info["last_seen_days"] = 0
     except Exception as e:
         info["fetch_error"] = str(e)
         return info
 
-    # Full user info: bio + contacts count
+    # Bio via raw GetFullUser — most reliable
     try:
         from pyrogram.raw import functions, types as raw_types
-        full = await app.invoke(functions.users.GetFullUser(id=raw_types.InputUserSelf()))
-        uf = full.full_user
-        info["has_bio"] = bool(getattr(uf, "about", None))
-        info["contacts_count"] = int(getattr(full, "contacts", None) or 0)
-        # Check if account has profile photo via peer_settings
-        info["settings_blocked"] = bool(getattr(uf, "settings", None) and
-                                         getattr(uf.settings, "blocked", False))
+        full_response = await app.invoke(
+            functions.users.GetFullUser(id=raw_types.InputUserSelf())
+        )
+        full_user = full_response.full_user
+        about = getattr(full_user, "about", None)
+        info["has_bio"] = bool(about)
+        info["bio_preview"] = (about or "")[:80] if about else ""
     except Exception:
-        pass
+        info["has_bio"] = None  # None = fetch failed (distinct from False = actually empty)
 
-    # Dialog sample — 100 is fast enough, gives real usage signal
+    # Dialog count — real usage indicator
     try:
         count = 0
         async for _ in app.get_dialogs(limit=100):
@@ -576,7 +607,16 @@ def run_ggr_rating(rating_id: int) -> AccountGGRRating:
         rating.geo = str(result.get("geo") or features.get("geo") or "")[:4]
         rating.similar_count = int(result.get("similar_count") or 0)
         rating.similar_params = str(result.get("similar_params") or "")[:255]
-        rating.factors = result.get("factors") or {}
+        # Normalise factors: new format = {"age": {"score": x, "details": [...]}, ...}
+        # Old format = {"age": 7.5, ...} — convert for backward compat
+        raw_factors = result.get("factors") or {}
+        normalised = {}
+        for k, v in raw_factors.items():
+            if isinstance(v, dict):
+                normalised[k] = {"score": float(v.get("score", 0)), "details": list(v.get("details") or [])}
+            else:
+                normalised[k] = {"score": float(v or 0), "details": []}
+        rating.factors = normalised
         rating.recommendations = result.get("recommendations") or {}
         rating.analysis = str(result.get("analysis") or "")
         rating.error = ""
