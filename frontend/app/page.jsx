@@ -1050,10 +1050,8 @@ function AccountDetailsModal({ account, proxies, initialTab = "profile", onClose
             <div><span>Живучість</span><b>{health?.liveness_score ?? account.liveness_score ?? account.health_score}/100</b></div>
             <div><span>Ризик</span><b>{accountRiskLabel(health?.risk_level ?? account.risk_level)}</b></div>
             <div><span>Карантин</span><b>{health?.quarantine_until || account.quarantine_until || "немає"}</b></div>
-            <div><span>Останній успіх</span><b>{health?.last_success_at || account.last_success_at || "немає"}</b></div>
-            <div><span>Остання помилка</span><b>{health?.last_error_at || account.last_error_at || "немає"}</b></div>
-            <div><span>Sleep</span><b>{account.sleep_min_seconds}-{account.sleep_max_seconds}s</b></div>
-            <div><span>Last auth error</span><b>{health?.last_auth_error || account.last_auth_error || "немає"}</b></div>
+            <div><span>Останній успіх</span><b>{compactDate(health?.last_success_at || account.last_success_at) || "немає"}</b></div>
+            <div><span>Остання помилка</span><b>{compactDate(health?.last_error_at || account.last_error_at) || "немає"}</b></div>
           </div>
           <div className="event-list">
             {(health?.recent_events || []).map((event) => (

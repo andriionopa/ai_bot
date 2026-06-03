@@ -329,6 +329,16 @@ def ensure_thread_event_loop():
         yield loop
     finally:
         if created:
+            # Cancel pending Pyrogram background tasks (ping/reconnect) before closing,
+            # otherwise they raise "cannot schedule new futures after shutdown"
+            try:
+                pending = asyncio.all_tasks(loop)
+                if pending:
+                    for task in pending:
+                        task.cancel()
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
             loop.close()
             asyncio.set_event_loop(None)
 
@@ -675,8 +685,21 @@ def run_auth_flow_operation(account: TelegramAccount, operation, *, reset: bool 
             asyncio.set_event_loop(previous_loop)
 
 
+_INFRA_ERRORS = (
+    "cannot schedule new futures after shutdown",
+    "event loop is closed",
+    "event loop stopped before future completed",
+)
+
+
 def telegram_error_text(exc: Exception) -> str:
     return str(exc)
+
+
+def _is_infra_error(exc: Exception) -> bool:
+    """True for asyncio/OS errors unrelated to Telegram auth — should not overwrite last_auth_error."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _INFRA_ERRORS)
 
 
 def telegram_error_contains(exc: Exception, code: str) -> bool:
@@ -807,7 +830,7 @@ def attach_account_via_session(
         remove_account_session_files(account.session_name)
         account.auth_state = TelegramAccount.AuthState.FAILED
         account.status = TelegramAccount.Status.DRAFT
-        account.last_auth_error = telegram_error_text(exc)
+        account.last_auth_error = "" if _is_infra_error(exc) else telegram_error_text(exc)
         account.last_error_at = timezone.now()
         account.save(update_fields=["auth_state", "status", "last_auth_error", "last_error_at"])
     return account
@@ -868,7 +891,7 @@ def start_credentials_auth(
     except (BadRequest, RPCError, OSError, RuntimeError) as exc:
         close_auth_flow(account.id)
         account.auth_state = TelegramAccount.AuthState.FAILED
-        account.last_auth_error = telegram_error_text(exc)
+        account.last_auth_error = "" if _is_infra_error(exc) else telegram_error_text(exc)
         account.save(update_fields=["auth_state", "last_auth_error"])
     return account
 
@@ -935,7 +958,7 @@ def resend_credentials_code(account: TelegramAccount) -> TelegramAccount:
     except (BadRequest, RPCError, OSError, RuntimeError) as exc:
         close_auth_flow(account.id)
         account.auth_state = TelegramAccount.AuthState.FAILED
-        account.last_auth_error = telegram_error_text(exc)
+        account.last_auth_error = "" if _is_infra_error(exc) else telegram_error_text(exc)
         account.save(update_fields=["auth_state", "last_auth_error"])
     return account
 
@@ -1011,7 +1034,7 @@ def complete_credentials_auth(
         refresh_account_profile_snapshot(account)
         close_auth_flow(account.id)
     except (BadRequest, RPCError, OSError, RuntimeError) as exc:
-        account.last_auth_error = telegram_error_text(exc)
+        account.last_auth_error = "" if _is_infra_error(exc) else telegram_error_text(exc)
         if telegram_error_contains(exc, "PHONE_CODE_INVALID") or telegram_error_contains(exc, "PHONE_CODE_EMPTY"):
             account.auth_state = TelegramAccount.AuthState.PENDING_CODE
         elif (
