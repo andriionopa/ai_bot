@@ -321,25 +321,33 @@ def _build_user_message(features: dict[str, object]) -> str:
 
     device_note = " ⚠ АВТОМАТИЗАЦІЙНИЙ ВІДБИТОК" if features.get("device_is_risky") else ""
 
-    peer_info = f"{features.get('peer_count', 0)} унікальних чатів/контактів"
-    if features.get('days_since_peer_activity') is not None:
-        peer_info += f", остання активність {features['days_since_peer_activity']} днів тому"
-    else:
-        peer_info += ", дата останньої активності невідома"
-
-    inactivity = ""
+    # Last activity via our system
+    inactivity = "немає даних"
     if features.get("days_since_last_success") is not None:
         d = features["days_since_last_success"]
         if d == 0:
-            inactivity = "активний сьогодні"
+            inactivity = "використовувався сьогодні через систему"
         elif d <= 3:
-            inactivity = f"активний {d} дн. тому"
+            inactivity = f"використовувався {d} дн. тому через систему"
         elif d <= 14:
-            inactivity = f"неактивний {d} днів"
+            inactivity = f"не використовувався {d} днів через систему"
         else:
-            inactivity = f"⚠ неактивний {d} днів — довга бездіяльність"
-    else:
-        inactivity = "немає даних"
+            inactivity = f"⚠ не використовувався {d} днів через систему"
+
+    successes = features['successes']
+    sys_activity = (
+        f"{successes} успішних операцій через систему"
+        if successes > 0
+        else "ще не використовувався через систему автоматизації"
+    )
+
+    # Peers — Pyrogram local cache, NOT real Telegram contacts
+    peer_count = features.get('peer_count', 0)
+    peer_note = (
+        f"{peer_count} пірів у Pyrogram-кеші сесії"
+        if peer_count > 0
+        else "Pyrogram-кеш порожній (акаунт ще не виконував дій через нашу систему — це НЕ означає відсутність активності в реальному Telegram)"
+    )
 
     return (
         f"ПАРАМЕТРИ TELEGRAM АКАУНТА (відповідай виключно УКРАЇНСЬКОЮ мовою):\n\n"
@@ -350,15 +358,16 @@ def _build_user_message(features: dict[str, object]) -> str:
         f"- Гео (телефон): {features['phone_prefix_geo']} | Гео проксі: {features['proxy_geo'] or 'н/д'}\n"
         f"- Профіль: username={features['has_username']}, ім'я={features['has_name']}, "
         f"телефон={features['has_phone']} (повнота {features['profile_completeness']}/4)\n"
-        f"- Контакти/чати в сесії: {peer_info}\n"
-        f"- Активність (30 днів): {features.get('active_days_last_30', 0)} активних днів — {features.get('activity_pattern', 'н/д')}\n"
-        f"- Остання активність: {inactivity}\n"
-        f"- Події здоров'я (останні 200): {features['flood_waits']} flood wait, "
-        f"{features['spam_blocks']} spam block, {features['successes']} успішних\n"
-        f"- Внутрішній health score: {features['health_score']}/100\n"
+        f"- Активність через систему: {sys_activity}\n"
+        f"- Остання дія: {inactivity}\n"
+        f"- Активних днів у системі (30д): {features.get('active_days_last_30', 0)} — {features.get('activity_pattern', 'н/д')}\n"
+        f"- Кеш сесії: {peer_note}\n"
+        f"- Flood wait: {features['flood_waits']} | Spam block: {features['spam_blocks']} | Health: {features['health_score']}/100\n"
         f"- На карантині: {features['is_quarantined']}\n"
         f"- Підключений: {features['is_connected']}\n"
         f"- Джерело авторизації: {features['auth_source']}\n\n"
+        f"ВАЖЛИВО: Pyrogram-кеш порожній НЕ означає що акаунт неактивний — він може активно "
+        f"використовуватись в реальному Telegram. Оцінюй тільки по наявних даних.\n\n"
         f"Оціни цей акаунт. ВСІ текстові поля JSON ОБОВ'ЯЗКОВО українською мовою."
     )
 
