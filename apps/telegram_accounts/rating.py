@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import timedelta
+import sqlite3
+from datetime import datetime, timedelta, timezone as dt_timezone
+from pathlib import Path
 
 import requests
 from django.conf import settings
@@ -47,10 +49,71 @@ def _geo_from_phone(phone: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _read_session_date(session_name: str) -> datetime | None:
+    """Read the authorization date from the Pyrogram session SQLite file."""
+    try:
+        workdir = Path(settings.MEDIA_ROOT) / "telegram_runtime"
+        path = workdir / f"{session_name}.session"
+        if not path.exists():
+            return None
+        with sqlite3.connect(str(path)) as conn:
+            row = conn.execute("SELECT date FROM sessions LIMIT 1").fetchone()
+            if row and row[0]:
+                return datetime.fromtimestamp(int(row[0]), tz=dt_timezone.utc)
+    except Exception:
+        pass
+    return None
+
+
+def _estimate_age_from_user_id(user_id: int | None) -> int | None:
+    """Estimate account age in days from Telegram user ID.
+    Telegram user IDs are roughly sequential — higher ID = newer account."""
+    if not user_id or user_id <= 0:
+        return None
+    # Approximate thresholds based on known Telegram ID milestones
+    milestones = [
+        (1_000_000,    "2013-04-01"),
+        (10_000_000,   "2014-01-01"),
+        (50_000_000,   "2015-01-01"),
+        (100_000_000,  "2016-01-01"),
+        (300_000_000,  "2017-06-01"),
+        (500_000_000,  "2018-06-01"),
+        (700_000_000,  "2019-06-01"),
+        (1_000_000_000,"2020-06-01"),
+        (1_500_000_000,"2021-03-01"),
+        (2_000_000_000,"2021-09-01"),
+        (3_000_000_000,"2022-06-01"),
+        (5_000_000_000,"2023-06-01"),
+        (7_000_000_000,"2024-03-01"),
+    ]
+    reg_date_str = "2013-01-01"
+    for threshold, date_str in milestones:
+        if user_id < threshold:
+            break
+        reg_date_str = date_str
+    try:
+        reg_date = datetime.strptime(reg_date_str, "%Y-%m-%d").replace(tzinfo=dt_timezone.utc)
+        return max(0, (datetime.now(tz=dt_timezone.utc) - reg_date).days)
+    except Exception:
+        return None
+
+
 def _extract_features(account: TelegramAccount) -> dict[str, object]:
     now = timezone.now()
 
-    age_days = max(0, (now - account.created_at).days)
+    # Try real Telegram account age from session file, then user_id, then added_at
+    session_date = _read_session_date(account.session_name)
+    if session_date:
+        age_days = max(0, (now.replace(tzinfo=None) - session_date.replace(tzinfo=None)).days)
+        age_source = "session_file"
+    else:
+        estimated = _estimate_age_from_user_id(account.telegram_user_id)
+        if estimated is not None:
+            age_days = estimated
+            age_source = "user_id_estimate"
+        else:
+            age_days = max(0, (now - account.created_at).days)
+            age_source = "added_to_system"
 
     events = list(account.health_events.order_by("-created_at")[:100])
     flood_waits = sum(1 for e in events if e.event_type == AccountHealthEvent.EventType.FLOOD_WAIT)
@@ -64,10 +127,16 @@ def _extract_features(account: TelegramAccount) -> dict[str, object]:
     has_username = bool(account.telegram_username)
     has_name = bool(account.first_name or account.last_name)
     has_phone = bool(account.phone_number)
-    profile_score = sum([has_username, has_name, has_phone])
+    has_birth_date = bool(account.birth_date)
+    profile_score = sum([has_username, has_name, has_phone, has_birth_date])
 
-    device = (account.device_model or "").strip()
-    system = (account.system_version or "").strip()
+    # Use actual stored device/system, detect automation fingerprints
+    from apps.telegram_accounts.services import RISKY_DEVICE_MODELS
+    raw_device = (account.device_model or "").strip()
+    raw_system = (account.system_version or "").strip()
+    device_is_risky = raw_device.lower() in RISKY_DEVICE_MODELS or not raw_device
+    device = raw_device if raw_device and not device_is_risky else "невідомий/автоматизація"
+    system = raw_system if raw_system else "невідомо"
 
     phone_geo = _geo_from_phone(account.phone_number)
     geo = proxy_geo or phone_geo or "XX"
@@ -78,8 +147,11 @@ def _extract_features(account: TelegramAccount) -> dict[str, object]:
 
     return {
         "age_days": age_days,
-        "device_model": device or "unknown",
-        "system_version": system or "unknown",
+        "age_source": age_source,
+        "telegram_user_id": account.telegram_user_id,
+        "device_model": device,
+        "system_version": system,
+        "device_is_risky": device_is_risky,
         "has_proxy": bool(proxy),
         "proxy_healthy": proxy_ok,
         "proxy_geo": proxy_geo,
@@ -165,30 +237,37 @@ Rate this account."""
 
 
 def _build_user_message(features: dict[str, object]) -> str:
-    has_proxy = features["has_proxy"]
-    proxy_healthy = features["proxy_healthy"]
-    if has_proxy and proxy_healthy:
-        proxy_str = "assigned and healthy"
-    elif has_proxy:
-        proxy_str = "assigned but unhealthy"
+    if features["has_proxy"] and features["proxy_healthy"]:
+        proxy_str = "є, резидентський, здоровий"
+    elif features["has_proxy"]:
+        proxy_str = "є, але нездоровий"
     else:
-        proxy_str = "no proxy"
+        proxy_str = "відсутній (прямий IP)"
+
+    age_note = {
+        "session_file": " (з session файлу — точно)",
+        "user_id_estimate": " (оцінка по Telegram User ID)",
+        "added_to_system": " (дата додавання в систему — НЕ реальний вік акаунта!)",
+    }.get(features.get("age_source", ""), "")
+
+    device_note = " ⚠ АВТОМАТИЗАЦІЙНИЙ ВІДБИТОК" if features.get("device_is_risky") else ""
 
     return (
-        f"Account parameters:\n"
-        f"- Age: {features['age_days']} days old\n"
-        f"- Device: {features['device_model']} / {features['system_version']}\n"
-        f"- Proxy: {proxy_str}\n"
-        f"- Geo (phone): {features['phone_prefix_geo']} | Proxy geo: {features['proxy_geo'] or 'n/a'}\n"
-        f"- Profile: username={features['has_username']}, name={features['has_name']}, "
-        f"phone={features['has_phone']} (completeness {features['profile_completeness']}/3)\n"
-        f"- Health events (last 100): {features['flood_waits']} flood waits, "
-        f"{features['spam_blocks']} spam blocks, {features['successes']} successes\n"
-        f"- Internal health score: {features['health_score']}/100\n"
-        f"- Quarantined: {features['is_quarantined']}\n"
-        f"- Connected: {features['is_connected']}\n"
-        f"- Auth source: {features['auth_source']}\n\n"
-        f"Rate this account."
+        f"ПАРАМЕТРИ TELEGRAM АКАУНТА (відповідай виключно УКРАЇНСЬКОЮ мовою):\n\n"
+        f"- Вік акаунта: {features['age_days']} днів{age_note}\n"
+        f"- Telegram User ID: {features.get('telegram_user_id') or 'невідомо'}\n"
+        f"- Пристрій: {features['device_model']} / {features['system_version']}{device_note}\n"
+        f"- Проксі: {proxy_str}\n"
+        f"- Гео (телефон): {features['phone_prefix_geo']} | Гео проксі: {features['proxy_geo'] or 'н/д'}\n"
+        f"- Профіль: username={features['has_username']}, ім'я={features['has_name']}, "
+        f"телефон={features['has_phone']} (повнота {features['profile_completeness']}/4)\n"
+        f"- Події здоров'я (останні 100): {features['flood_waits']} flood wait, "
+        f"{features['spam_blocks']} spam block, {features['successes']} успішних\n"
+        f"- Внутрішній health score: {features['health_score']}/100\n"
+        f"- На карантині: {features['is_quarantined']}\n"
+        f"- Підключений: {features['is_connected']}\n"
+        f"- Джерело авторизації: {features['auth_source']}\n\n"
+        f"Оціни цей акаунт. ВСІ текстові поля JSON ОБОВ'ЯЗКОВО українською мовою."
     )
 
 
