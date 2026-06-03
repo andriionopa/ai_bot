@@ -68,6 +68,9 @@ class WarmupPolicy(models.Model):
     enable_link_preview = models.BooleanField(default=False)
     enable_typing_simulation = models.BooleanField(default=True)
     enable_profile_view = models.BooleanField(default=False)
+    # AI shield
+    ai_protection = models.BooleanField(default=True)
+    protection_mode = models.CharField(max_length=16, default="balanced")
     enable_settings_check = models.BooleanField(default=False)
     enable_gradual_profile_check = models.BooleanField(default=False)
     enable_emoji_status_check = models.BooleanField(default=False)

@@ -7,6 +7,8 @@ import { apiFetch, normalizeApiError } from "@/lib/api";
 const defaultPolicy = {
   name: "Людська активність 1-2 дні",
   behavior_profile: "balanced",
+  ai_protection: true,
+  protection_mode: "balanced",
   daily_join_min: 3,
   daily_join_max: 8,
   delay_min_seconds: 120,
@@ -357,6 +359,32 @@ export default function WarmupPage() {
             <Toggle checked={policy.auto_adapt_limits} onChange={(value) => updatePolicyField("auto_adapt_limits", value)} label="Автоадаптація по стадії акаунта" />
           </div>
         </div>
+      </section>
+
+      {/* AI Shield */}
+      <section className="warmup-card">
+        <div className="section-title">
+          <span className="section-icon green">🛡</span>
+          <div><h3>ШІ захист від блокувань</h3></div>
+          <div style={{ marginLeft: "auto" }}>
+            <Toggle checked={policy.ai_protection} onChange={(v) => updatePolicyField("ai_protection", v)} label="" />
+          </div>
+        </div>
+        {policy.ai_protection && (
+          <div className="pill-grid" style={{ marginTop: 10 }}>
+            {[
+              ["safe", "Консервативний"],
+              ["balanced", "Збалансований"],
+              ["fast", "Агресивний"],
+            ].map(([v, label]) => (
+              <button key={v} type="button"
+                className={`pill-button ${policy.protection_mode === v ? "active" : ""}`}
+                onClick={() => updatePolicyField("protection_mode", v)}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="warmup-card danger-soft">

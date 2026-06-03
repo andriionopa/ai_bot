@@ -543,13 +543,13 @@ export default function ReactionsPage() {
 
             {/* AI захист */}
             <section className="warmup-card dashed-panel">
-              <h4>ІІ захист</h4>
-              <Toggle
-                checked={form.ai_protection}
-                onChange={(v) => patchForm("ai_protection", v)}
-                label="Ввімкнути ІІ захист"
-                note="Автоматично безпечні затримки"
-              />
+              <div className="section-title" style={{ marginBottom: 8 }}>
+                <span className="section-icon green">🛡</span>
+                <div><h4 style={{ margin: 0 }}>ШІ захист від блокувань</h4></div>
+                <div style={{ marginLeft: "auto" }}>
+                  <Toggle checked={form.ai_protection} onChange={(v) => patchForm("ai_protection", v)} label="" />
+                </div>
+              </div>
               {form.ai_protection && (
                 <div className="pill-grid" style={{ marginTop: 10 }}>
                   {[

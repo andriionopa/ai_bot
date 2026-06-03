@@ -446,7 +446,26 @@ export default function ChannelParserPage() {
                 <p>Жорсткі межі для Telegram API</p>
               </div>
             </div>
-            <Toggle checked={form.ai_protection} onChange={(value) => patchForm("ai_protection", value)} label="ШІ-захист акаунтів" note="Рандомізує паузи між діями і знижує паливність" />
+            <div className="section-title" style={{ marginBottom: 8 }}>
+              <span className="section-icon green">🛡</span>
+              <div><h4 style={{ margin: 0 }}>ШІ захист від блокувань</h4></div>
+              <div style={{ marginLeft: "auto" }}>
+                <Toggle checked={form.ai_protection} onChange={(value) => patchForm("ai_protection", value)} label="" />
+              </div>
+            </div>
+            {form.ai_protection && (
+              <div className="pill-grid" style={{ marginBottom: 14 }}>
+                {[
+                  ["safe", "Консервативний"],
+                  ["balanced", "Збалансований"],
+                  ["fast", "Агресивний"],
+                ].map(([mode, label]) => (
+                  <button key={mode} type="button" className={`pill-button ${form.speed_mode === mode ? "active" : ""}`} onClick={() => patchForm("speed_mode", mode)}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <label>
               Джерело пошуку
@@ -462,18 +481,6 @@ export default function ChannelParserPage() {
                 ))}
               </div>
             </label>
-
-            <div className="segmented-grid">
-              {[
-                ["safe", "Консервативний"],
-                ["balanced", "Збалансований"],
-                ["fast", "Агресивний"],
-              ].map(([mode, label]) => (
-                <button key={mode} type="button" className={form.speed_mode === mode ? "active" : ""} onClick={() => patchForm("speed_mode", mode)}>
-                  {label}
-                </button>
-              ))}
-            </div>
 
             <label>
               Ліміт результатів

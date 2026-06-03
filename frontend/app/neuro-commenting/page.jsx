@@ -51,9 +51,9 @@ function Toggle({ checked, onChange, label, note }) {
 
 function PromptCard({ prompt, selected, onSelect, onPreview }) {
   return (
-    <button
-      type="button"
-      className={selected ? "active" : ""}
+    <div
+      role="button"
+      tabIndex={0}
       style={{
         border: selected ? "2px solid var(--blue)" : "1px solid var(--line)",
         borderRadius: 10, padding: "10px 12px", cursor: "pointer", position: "relative",
@@ -62,6 +62,7 @@ function PromptCard({ prompt, selected, onSelect, onPreview }) {
         display: "flex", flexDirection: "column", gap: 6,
       }}
       onClick={onSelect}
+      onKeyDown={(e) => e.key === "Enter" && onSelect()}
     >
       {selected && (
         <div style={{
@@ -75,7 +76,7 @@ function PromptCard({ prompt, selected, onSelect, onPreview }) {
         <button type="button" className="ghost-button" style={{ fontSize: 11, padding: "2px 8px" }}
           onClick={(e) => { e.stopPropagation(); onPreview(prompt); }}>👁</button>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -557,23 +558,22 @@ export default function NeuroCommentingPage() {
       <section className="warmup-card">
         <div className="section-title">
           <span className="section-icon green">🛡</span>
-          <div><h3>AI захист від блокувань</h3><p>Симулює людську поведінку: затримки, набір тексту, перегляди профілів, опечатки</p></div>
+          <div><h3>ШІ захист від блокувань</h3></div>
           <div style={{ marginLeft: "auto" }}>
             <Toggle checked={form.ai_protection} onChange={v => setField("ai_protection", v)} label="" />
           </div>
         </div>
         {form.ai_protection && (
-          <div className="intensity-list">
+          <div className="pill-grid" style={{ marginTop: 10 }}>
             {[
-              ["safe", "🛡 Консервативний", "x1.5 затримки · набір 40-60 cpm · сон 01:00-07:00 · перегляд профілів 90% · опечатки 8%"],
-              ["balanced", "⚖ Збалансований", "x1.0 затримки · набір 100-150 cpm · сон 02:00-07:00 · перегляд 70% · опечатки 5% (рекомендовано)"],
-              ["fast", "⚡ Агресивний", "x0.7 затримки · набір вимкнено · без нічного сну · перегляд 30% · опечатки 2%"],
-            ].map(([v, title, desc]) => (
+              ["safe", "Консервативний"],
+              ["balanced", "Збалансований"],
+              ["fast", "Агресивний"],
+            ].map(([v, label]) => (
               <button key={v} type="button"
-                className={form.protection_mode === v ? "active" : ""}
+                className={`pill-button ${form.protection_mode === v ? "active" : ""}`}
                 onClick={() => setField("protection_mode", v)}>
-                <b>{title}</b>
-                <span>{desc}</span>
+                {label}
               </button>
             ))}
           </div>

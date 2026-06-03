@@ -64,6 +64,8 @@ class WarmupPolicySerializer(serializers.ModelSerializer):
             "id",
             "name",
             "behavior_profile",
+            "ai_protection",
+            "protection_mode",
             "daily_join_min",
             "daily_join_max",
             "delay_min_seconds",
