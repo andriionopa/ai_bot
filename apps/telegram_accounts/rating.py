@@ -305,6 +305,45 @@ _USER_TEMPLATE = """Account parameters:
 Rate this account."""
 
 
+def _format_live_data(live: dict) -> str:
+    """Format live Telegram API data block for the AI prompt."""
+    if not live:
+        return "- Дані з Telegram API: акаунт не підключений або отримати не вдалось\n\n"
+    if "fetch_error" in live:
+        return f"- Дані з Telegram API: помилка — {live['fetch_error']}\n\n"
+
+    lines = ["📡 ДАНІ БЕЗПОСЕРЕДНЬО З TELEGRAM API (найточніші):"]
+
+    last_seen = live.get("last_seen", "невідомо")
+    lines.append(f"  • Останній раз онлайн: {last_seen}")
+
+    if live.get("is_restricted"):
+        reasons = ", ".join(live.get("restriction_reasons") or ["без деталей"])
+        lines.append(f"  • ⚠ ОБМЕЖЕННЯ: {reasons}")
+    else:
+        lines.append("  • Обмеження/бани: відсутні ✓")
+
+    if live.get("is_scam"):
+        lines.append("  • 🚨 ПОЗНАЧЕНИЙ ЯК СКАМ")
+    if live.get("is_fake"):
+        lines.append("  • 🚨 ПОЗНАЧЕНИЙ ЯК ФЕЙК")
+
+    lines.append(f"  • Telegram Premium: {'так ✓' if live.get('is_premium') else 'ні'}")
+    lines.append(f"  • Біографія (bio): {'є ✓' if live.get('has_bio') else 'відсутня'}")
+
+    dialogs = live.get("dialog_sample")
+    if dialogs is not None:
+        quality = "відмінно — акаунт активно використовується" if dialogs >= 50 else \
+                  "добре" if dialogs >= 20 else \
+                  "мало — можливо новий або малоактивний" if dialogs < 10 else "нормально"
+        lines.append(f"  • Активних діалогів (перші 100): {dialogs} — {quality}")
+
+    if live.get("settings_blocked"):
+        lines.append("  • ⚠ Акаунт заблокував відправника")
+
+    return "\n".join(lines) + "\n\n"
+
+
 def _build_user_message(features: dict[str, object]) -> str:
     if features["has_proxy"] and features["proxy_healthy"]:
         proxy_str = "є, резидентський, здоровий"
@@ -368,6 +407,7 @@ def _build_user_message(features: dict[str, object]) -> str:
         f"- Джерело авторизації: {features['auth_source']}\n\n"
         f"ВАЖЛИВО: Pyrogram-кеш порожній НЕ означає що акаунт неактивний — він може активно "
         f"використовуватись в реальному Telegram. Оцінюй тільки по наявних даних.\n\n"
+        f"{_format_live_data(features.get('live', {}))}"
         f"Оціни цей акаунт. ВСІ текстові поля JSON ОБОВ'ЯЗКОВО українською мовою."
     )
 
@@ -406,6 +446,84 @@ def _call_ai(features: dict[str, object]) -> dict[str, object]:
 
 
 # ---------------------------------------------------------------------------
+# Live Telegram API fetch
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_live_telegram_data(app) -> dict:
+    """Connect to Telegram and pull real account signals: status, restrictions,
+    dialog count, bio, premium flag. Best-effort — never raises."""
+    info: dict[str, object] = {}
+    try:
+        me = await app.get_me()
+        info["is_restricted"] = bool(me.is_restricted)
+        info["is_scam"] = bool(getattr(me, "is_scam", False))
+        info["is_fake"] = bool(getattr(me, "is_fake", False))
+        info["is_premium"] = bool(getattr(me, "is_premium", False))
+        info["restriction_reasons"] = [r.reason for r in (me.restrictions or [])]
+
+        # Last seen / online status
+        status = getattr(me, "status", None)
+        if status is None:
+            info["last_seen"] = "невідомо (приватність)"
+            info["last_seen_days"] = None
+        else:
+            stype = type(status).__name__
+            if stype == "UserStatusOnline":
+                info["last_seen"] = "онлайн зараз"
+                info["last_seen_days"] = 0
+            elif stype == "UserStatusOffline" and getattr(status, "was_online", None):
+                was = status.was_online
+                if hasattr(was, "tzinfo"):
+                    if was.tzinfo is None:
+                        was = was.replace(tzinfo=dt_timezone.utc)
+                    days = max(0, (datetime.now(tz=dt_timezone.utc) - was).days)
+                else:
+                    days = None
+                info["last_seen"] = f"офлайн {days} дн. тому" if days is not None else "офлайн"
+                info["last_seen_days"] = days
+            elif stype == "UserStatusRecently":
+                info["last_seen"] = "нещодавно (< 2 тижні)"
+                info["last_seen_days"] = 7
+            elif stype == "UserStatusLastWeek":
+                info["last_seen"] = "протягом тижня"
+                info["last_seen_days"] = 7
+            elif stype == "UserStatusLastMonth":
+                info["last_seen"] = "протягом місяця"
+                info["last_seen_days"] = 20
+            else:
+                info["last_seen"] = f"давно ({stype})"
+                info["last_seen_days"] = 60
+    except Exception as e:
+        info["fetch_error"] = str(e)
+        return info
+
+    # Full user info: bio + contacts count
+    try:
+        from pyrogram.raw import functions, types as raw_types
+        full = await app.invoke(functions.users.GetFullUser(id=raw_types.InputUserSelf()))
+        uf = full.full_user
+        info["has_bio"] = bool(getattr(uf, "about", None))
+        info["contacts_count"] = int(getattr(full, "contacts", None) or 0)
+        # Check if account has profile photo via peer_settings
+        info["settings_blocked"] = bool(getattr(uf, "settings", None) and
+                                         getattr(uf.settings, "blocked", False))
+    except Exception:
+        pass
+
+    # Dialog sample — 100 is fast enough, gives real usage signal
+    try:
+        count = 0
+        async for _ in app.get_dialogs(limit=100):
+            count += 1
+        info["dialog_sample"] = count
+    except Exception:
+        info["dialog_sample"] = None
+
+    return info
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -423,7 +541,21 @@ def run_ggr_rating(rating_id: int) -> AccountGGRRating:
             .prefetch_related("health_events")
             .get(pk=rating.account_id)
         )
+
+        # Pull live data from Telegram if account is connected
+        live_data: dict = {}
+        if account.is_connected:
+            from apps.telegram_accounts.services import run_client_operation
+            try:
+                live_data = run_client_operation(
+                    account,
+                    lambda app: _fetch_live_telegram_data(app),
+                )
+            except Exception as e:
+                live_data = {"fetch_error": str(e)}
+
         features = _extract_features(account)
+        features["live"] = live_data
         result = _call_ai(features)
 
         score = float(result.get("score", 5.0))
