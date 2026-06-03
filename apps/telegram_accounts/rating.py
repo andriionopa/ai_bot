@@ -559,11 +559,18 @@ async def _fetch_live_telegram_data(app) -> dict:
     # SpamBot check — real Telegram spam status via @SpamBot
     import asyncio
     try:
+        sent_at = datetime.now(tz=dt_timezone.utc)
         await app.send_message("SpamBot", "/start")
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
         response_text = ""
-        async for msg in app.get_chat_history("SpamBot", limit=3):
-            if msg.from_user and msg.from_user.is_bot and msg.text:
+        async for msg in app.get_chat_history("SpamBot", limit=5):
+            if not (msg.from_user and msg.from_user.is_bot and msg.text):
+                continue
+            # Only accept responses that arrived AFTER we sent /start
+            msg_date = msg.date
+            if msg_date.tzinfo is None:
+                msg_date = msg_date.replace(tzinfo=dt_timezone.utc)
+            if msg_date >= sent_at:
                 response_text = msg.text
                 break
         if response_text:
