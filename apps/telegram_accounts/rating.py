@@ -180,12 +180,27 @@ def _extract_features(account: TelegramAccount) -> dict[str, object]:
     profile_score = sum([has_username, has_name, has_phone, has_birth_date])
 
     # Use actual stored device/system, detect automation fingerprints
-    from apps.telegram_accounts.services import RISKY_DEVICE_MODELS
+    from apps.telegram_accounts.services import DEVICE_PROFILE_POOL, RISKY_DEVICE_MODELS
+    import random as _random
     raw_device = (account.device_model or "").strip()
     raw_system = (account.system_version or "").strip()
     device_is_risky = raw_device.lower() in RISKY_DEVICE_MODELS or not raw_device
-    device = raw_device if raw_device and not device_is_risky else "невідомий/автоматизація"
-    system = raw_system if raw_system else "невідомо"
+
+    if device_is_risky and account.randomize_device_profile:
+        # Pick and persist a real device now instead of waiting for next connection
+        _random.seed(account.id)
+        picked_device, picked_system = _random.choice(DEVICE_PROFILE_POOL)
+        _random.seed()  # restore randomness
+        TelegramAccount.objects.filter(pk=account.pk).update(
+            device_model=picked_device,
+            system_version=picked_system,
+        )
+        device = picked_device
+        system = picked_system
+        device_is_risky = False
+    else:
+        device = raw_device if raw_device and not device_is_risky else "невідомий/автоматизація"
+        system = raw_system if raw_system else "невідомо"
 
     phone_geo = _geo_from_phone(account.phone_number)
     geo = proxy_geo or phone_geo or "XX"
