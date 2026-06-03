@@ -117,12 +117,14 @@ DEVICE_PROFILE_POOL = (
     ("Motorola Edge 40",     "Android 13"),
 )
 RISKY_DEVICE_MODELS = {
-    "stogramgpt",
     "web automation",
-    "stogramgpt desktop",
-    "stogramgpt mobile",
-    "stogramgpt web",
-    "stogramgpt ios",
+    "automation",
+    "bot",
+    "script",
+    "python",
+    "telethon",
+    "pyrogram",
+    "pc 64bit",
 }
 
 
