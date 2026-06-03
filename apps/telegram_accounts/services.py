@@ -84,20 +84,45 @@ EVENT_SCORE_DELTAS = {
     AccountHealthEvent.EventType.SUCCESS: 2,
 }
 
-DEFAULT_DEVICE_MODEL = "StogramGPT"
-DEFAULT_SYSTEM_VERSION = "Web Automation"
+DEFAULT_DEVICE_MODEL = "iPhone 14 Pro"
+DEFAULT_SYSTEM_VERSION = "iOS 17.2"
 DEVICE_PROFILE_POOL = (
-    ("StogramGPT Desktop", "Web Automation"),
-    ("StogramGPT Mobile", "Android 14"),
-    ("StogramGPT Web", "Chrome 124"),
-    ("StogramGPT iOS", "iOS 17"),
+    # iPhone
+    ("iPhone 16 Pro",        "iOS 18.1"),
+    ("iPhone 16",            "iOS 18.0.1"),
+    ("iPhone 15 Pro Max",    "iOS 17.6.1"),
+    ("iPhone 15 Pro",        "iOS 17.5.1"),
+    ("iPhone 15",            "iOS 17.4.1"),
+    ("iPhone 14 Pro Max",    "iOS 17.3.1"),
+    ("iPhone 14 Pro",        "iOS 17.2.1"),
+    ("iPhone 14",            "iOS 17.1.2"),
+    ("iPhone 13 Pro Max",    "iOS 16.7.4"),
+    ("iPhone 13",            "iOS 16.6.1"),
+    # Android flagship
+    ("Samsung Galaxy S24 Ultra", "Android 14"),
+    ("Samsung Galaxy S24",       "Android 14"),
+    ("Samsung Galaxy S23 Ultra", "Android 14"),
+    ("Samsung Galaxy S23",       "Android 13"),
+    ("Google Pixel 8 Pro",       "Android 14"),
+    ("Google Pixel 8",           "Android 14"),
+    ("Google Pixel 7a",          "Android 14"),
+    ("OnePlus 12",               "Android 14"),
+    ("Xiaomi 14",                "Android 14"),
+    ("Xiaomi 13T Pro",           "Android 13"),
+    # Android mid-range
+    ("Samsung Galaxy A54",   "Android 13"),
+    ("Samsung Galaxy A34",   "Android 13"),
+    ("Xiaomi Redmi Note 13", "Android 13"),
+    ("POCO X6 Pro",          "Android 14"),
+    ("Motorola Edge 40",     "Android 13"),
 )
 RISKY_DEVICE_MODELS = {
-    "telegram desktop",
-    "iphone 13 pro",
-    "samsung galaxy s23",
-    "xiaomi 13",
-    "macbook pro",
+    "stogramgpt",
+    "web automation",
+    "stogramgpt desktop",
+    "stogramgpt mobile",
+    "stogramgpt web",
+    "stogramgpt ios",
 }
 
 

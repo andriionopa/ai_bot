@@ -586,6 +586,13 @@ class GGRViewSet(viewsets.ViewSet):
         if not account_ids:
             return Response({"error": "account_ids required"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Cancel any stuck pending/running ratings for these accounts first
+        AccountGGRRating.objects.filter(
+            owner=request.user,
+            account_id__in=account_ids,
+            status__in=[AccountGGRRating.Status.PENDING, AccountGGRRating.Status.RUNNING],
+        ).update(status=AccountGGRRating.Status.FAILED, error="Скасовано користувачем")
+
         accounts = TelegramAccount.objects.filter(owner=request.user, pk__in=account_ids)
         created = []
         for account in accounts:
@@ -596,6 +603,19 @@ class GGRViewSet(viewsets.ViewSet):
             created.append({"rating_id": rating.id, "account_id": account.id, "task_id": task.id})
 
         return Response({"created": created}, status=status.HTTP_202_ACCEPTED)
+
+    @action(detail=False, methods=["post"], url_path="cancel")
+    def cancel(self, request):
+        """Cancel pending/running ratings. Body: {account_ids: [int]}"""
+        account_ids = request.data.get("account_ids") or []
+        if not account_ids:
+            return Response({"error": "account_ids required"}, status=status.HTTP_400_BAD_REQUEST)
+        updated = AccountGGRRating.objects.filter(
+            owner=request.user,
+            account_id__in=account_ids,
+            status__in=[AccountGGRRating.Status.PENDING, AccountGGRRating.Status.RUNNING],
+        ).update(status=AccountGGRRating.Status.FAILED, error="Скасовано користувачем")
+        return Response({"cancelled": updated})
 
     @action(detail=False, methods=["get"], url_path="ratings")
     def ratings(self, request):

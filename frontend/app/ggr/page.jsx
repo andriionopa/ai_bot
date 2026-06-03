@@ -42,7 +42,7 @@ function ScoreBar({ score }) {
   );
 }
 
-function AccountCard({ account, ggr, onCheck }) {
+function AccountCard({ account, ggr, onCheck, onCancel }) {
   const checking = ggr && (ggr.status === "pending" || ggr.status === "running");
   return (
     <div style={{
@@ -64,7 +64,15 @@ function AccountCard({ account, ggr, onCheck }) {
             <div style={{ fontSize: 10, color: "var(--muted)" }}>/ 10</div>
           </div>
         ) : checking ? (
-          <span style={{ fontSize: 12, color: "var(--amber)" }}>⏳ {statusText(ggr.status)}</span>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+            <span style={{ fontSize: 12, color: "var(--amber)" }}>⏳ {statusText(ggr.status)}</span>
+            <button
+              type="button"
+              className="ghost-button"
+              style={{ fontSize: 11, padding: "2px 8px", color: "var(--red)" }}
+              onClick={() => onCancel([account.id])}
+            >✕ Скасувати</button>
+          </div>
         ) : (
           <span style={{ fontSize: 12, color: "var(--muted)" }}>не перевірено</span>
         )}
@@ -118,15 +126,16 @@ function AccountCard({ account, ggr, onCheck }) {
         <div style={{ fontSize: 12, color: "var(--red)" }}>⚠ {ggr.error}</div>
       )}
 
-      <button
-        type="button"
-        className="ghost-button"
-        style={{ fontSize: 12, marginTop: 4 }}
-        disabled={checking}
-        onClick={() => onCheck([account.id])}
-      >
-        {checking ? "Аналіз…" : ggr?.status === "done" ? "↻ Перевірити знову" : "▷ Перевірити GGR"}
-      </button>
+      {!checking && (
+        <button
+          type="button"
+          className="ghost-button"
+          style={{ fontSize: 12, marginTop: 4 }}
+          onClick={() => onCheck([account.id])}
+        >
+          {ggr?.status === "done" ? "↻ Перевірити знову" : "▷ Перевірити GGR"}
+        </button>
+      )}
     </div>
   );
 }
@@ -291,6 +300,15 @@ export default function GGRPage() {
     }
   };
 
+  const handleCancel = async (ids) => {
+    try {
+      await apiFetch(`${BASE}/cancel/`, { method: "POST", body: { account_ids: ids } });
+      await load();
+    } catch (e) {
+      alert(normalizeApiError(e));
+    }
+  };
+
   const handleCheckAll = () => handleCheck((overview?.accounts || []).map(a => a.id));
   const handleCheckSelected = () => handleCheck([...selected]);
 
@@ -379,6 +397,7 @@ export default function GGRPage() {
                     account={account}
                     ggr={account.ggr}
                     onCheck={handleCheck}
+                    onCancel={handleCancel}
                   />
                 </div>
               </div>

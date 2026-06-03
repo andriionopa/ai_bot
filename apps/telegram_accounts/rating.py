@@ -103,9 +103,9 @@ def _extract_features(account: TelegramAccount) -> dict[str, object]:
 # AI call
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """You are a Telegram account quality analyst. Based on account parameters, produce a JSON rating.
+_SYSTEM_PROMPT = """Ти — аналітик якості Telegram акаунтів для автоматизації. На основі параметрів акаунта видай JSON-рейтинг.
 
-Return ONLY valid JSON with this exact structure (no markdown, no explanation):
+Поверни ТІЛЬКИ валідний JSON у точно такій структурі (без markdown, без пояснень):
 {
   "score": <float 1.0-10.0>,
   "potential": <float 1.0-10.0>,
@@ -113,9 +113,9 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
   "survival_7d": <int 0-100>,
   "survival_30d": <int 0-100>,
   "median_lifetime_days": <int>,
-  "geo": "<2-letter country code>",
+  "geo": "<2-літерний код країни>",
   "similar_count": <int>,
-  "similar_params": "<brief description of comparable accounts>",
+  "similar_params": "<стислий опис схожих акаунтів українською>",
   "factors": {
     "age": <float 0-10>,
     "device": <float 0-10>,
@@ -125,27 +125,28 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
     "registration": <float 0-10>
   },
   "recommendations": {
-    "safe_modules": [<list of strings>],
-    "caution_modules": [<list of strings>],
-    "avoid": [<list of strings>],
+    "safe_modules": [<список рядків українською>],
+    "caution_modules": [<список рядків українською>],
+    "avoid": [<список рядків українською>],
     "next_check_days": <int>,
     "warmup_needed": <bool>,
     "expected_lifetime_days": <int>
   },
-  "analysis": "<2-3 sentences explaining the rating>"
+  "analysis": "<2-3 речення пояснення рейтингу українською мовою>"
 }
 
-Scoring guidelines:
-- score: overall account quality for automation (ban resistance, longevity)
-- potential: how well it can perform IF it survives (activity capacity)
-- label: high=7+, medium=4-7, low=<4
-- survival_7d/30d: % chance of still being alive and usable after 7/30 days under moderate automation
-- median_lifetime_days: estimated days until first major restriction under normal automation load
-- factors: sub-scores explaining score breakdown
-- safe_modules: ["neuro_commenting","reactions"] — modules safe to run
-- caution_modules: modules that need reduced load
-- avoid: specific risky patterns to avoid
-- warmup_needed: whether 3-7 day warmup is recommended before automation
+Правила оцінки:
+- score: загальна якість акаунта для автоматизації (стійкість до бану, довговічність)
+- potential: наскільки добре він може працювати ЯКЩО виживе
+- label: high=7+, medium=4-7, low<4
+- survival_7d/30d: % шанс що акаунт залишиться живим і придатним через 7/30 днів при помірній автоматизації
+- median_lifetime_days: очікувана кількість днів до першого серйозного обмеження
+- factors: субоцінки що пояснюють загальний score
+- safe_modules: модулі які безпечно запускати (використовуй: нейрокоментинг, реакції, прогрів, парсинг)
+- caution_modules: модулі що потребують обмеженого навантаження
+- avoid: конкретні ризиковані дії яких треба уникати
+- warmup_needed: чи рекомендується прогрів 3-7 днів перед автоматизацією
+- Вік акаунта >2 років значно підвищує score. Відсутність проксі і device-fingerprint типу автоматизації знижує його.
 """
 
 _USER_TEMPLATE = """Account parameters:
@@ -208,7 +209,7 @@ def _call_ai(features: dict[str, object]) -> dict[str, object]:
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": _build_user_message(features)},
             ],
-            "temperature": 0.2,
+            "temperature": 0.0,
             "max_tokens": 800,
             "stream": False,
         },
@@ -231,14 +232,17 @@ def _call_ai(features: dict[str, object]) -> dict[str, object]:
 
 def run_ggr_rating(rating_id: int) -> AccountGGRRating:
     """Execute GGR analysis for a pending AccountGGRRating record."""
-    rating = AccountGGRRating.objects.select_related("account__proxy", "account__health_events").get(pk=rating_id)
+    rating = AccountGGRRating.objects.select_related("account__proxy").get(pk=rating_id)
     rating.status = AccountGGRRating.Status.RUNNING
     rating.save(update_fields=["status", "updated_at"])
 
     try:
-        account = AccountGGRRating.objects.select_related(
-            "account", "account__proxy"
-        ).get(pk=rating_id).account
+        account = (
+            TelegramAccount.objects
+            .select_related("proxy")
+            .prefetch_related("health_events")
+            .get(pk=rating.account_id)
+        )
         features = _extract_features(account)
         result = _call_ai(features)
 
