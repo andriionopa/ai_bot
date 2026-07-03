@@ -21,5 +21,7 @@ frontend/.env.*.local
 staticfiles/
 media/
 .env
+plan.md
+proj.md
 
 CLAUDE.md
