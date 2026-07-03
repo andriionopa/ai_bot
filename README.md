@@ -1,6 +1,6 @@
-# AI Bot
+# Telegram Ops Console
 
-AI Bot is a Django and Next.js control panel for managing Telegram account operations, parsing public Telegram data, scheduling warmup activity, running reactions, generating account profiles, and evaluating account quality with AI-assisted scoring.
+Telegram Ops Console is a Django and Next.js control panel for managing Telegram account operations, parsing public Telegram data, scheduling warmup activity, running reactions, generating account profiles, and evaluating account quality with AI-assisted scoring.
 
 The backend exposes a REST API, WebSocket log streaming, Celery workers, Redis-backed realtime delivery, and PostgreSQL-ready persistence. The frontend is a Next.js application that provides the operational dashboard.
 
@@ -51,7 +51,7 @@ Core backend variables:
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `DJANGO_SECRET_KEY` | Production | Django signing key. Use a long random value outside local development. |
+| `DJANGO_SECRET_KEY` | Production | Django signing key. Required when `DJANGO_DEBUG=False`. |
 | `DJANGO_DEBUG` | Production | Set to `False` in production. |
 | `DJANGO_ALLOWED_HOSTS` | Production | Comma-separated hostnames allowed by Django. |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | Production | Comma-separated trusted origins including scheme. |
@@ -206,7 +206,7 @@ npm run start
 Before exposing the service publicly:
 
 - Set `DJANGO_DEBUG=False`.
-- Replace the default `DJANGO_SECRET_KEY`.
+- Set a long random `DJANGO_SECRET_KEY`.
 - Configure `DJANGO_ALLOWED_HOSTS`, `DJANGO_CSRF_TRUSTED_ORIGINS`, and `DJANGO_CORS_ALLOWED_ORIGINS`.
 - Use HTTPS at the reverse proxy.
 - Keep `.env`, Telegram sessions, database backups, and provider API keys out of git.

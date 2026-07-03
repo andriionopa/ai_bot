@@ -251,14 +251,14 @@ def test_safe_attr_text_ignores_unicode_decode_errors():
 
 class FakeParserApp:
     async def search_global(self, query, limit=30):
-        yield SimpleNamespace(chat=SimpleNamespace(username="business_trends"))
+        yield SimpleNamespace(chat=SimpleNamespace(username="async_business_trends"))
 
     async def get_chat(self, chat_ref):
         return SimpleNamespace(
             id=-100123,
             type=ChatType.CHANNEL,
             title="Бізнес трендс",
-            username="business_trends",
+            username="async_business_trends",
             members_count=2500,
             description="Український бізнес канал",
             linked_chat=SimpleNamespace(title="Бізнес коментарі"),
@@ -295,7 +295,7 @@ def test_parse_with_account_uses_async_safe_orm_calls(monkeypatch):
     )
 
     assert found == 1
-    assert ParsedChannel.objects.filter(job=job, username="business_trends").exists()
+    assert ParsedChannel.objects.filter(job=job, username="async_business_trends").exists()
     assert ChannelParserLog.objects.filter(job=job, level=ChannelParserLog.Level.SUCCESS).exists()
 
 

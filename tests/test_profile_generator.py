@@ -26,7 +26,7 @@ def test_profile_generator_dashboard_requires_authenticated_user():
     response = Client().get("/dashboard/profiles/")
 
     assert response.status_code == 302
-    assert response.headers["Location"].startswith("/auth/")
+    assert response.headers["Location"] == "http://127.0.0.1:3001/"
 
 
 @pytest.mark.django_db

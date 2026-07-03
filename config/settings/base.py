@@ -5,6 +5,9 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
+from django.core.exceptions import ImproperlyConfigured
+from django.core.management.utils import get_random_secret_key
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 
@@ -53,11 +56,12 @@ def db_config(url: str) -> dict[str, object]:
     }
 
 
-SECRET_KEY = env(
-    "DJANGO_SECRET_KEY",
-    "unsafe-local-key-stage1-change-me-please-before-any-shared-network-use",
-)
 DEBUG = env_bool("DJANGO_DEBUG", True)
+SECRET_KEY = env("DJANGO_SECRET_KEY")
+if not SECRET_KEY:
+    if not DEBUG:
+        raise ImproperlyConfigured("DJANGO_SECRET_KEY is required when DJANGO_DEBUG is false")
+    SECRET_KEY = get_random_secret_key()
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost,0.0.0.0")
 CSRF_TRUSTED_ORIGINS = env_list(
     "DJANGO_CSRF_TRUSTED_ORIGINS",

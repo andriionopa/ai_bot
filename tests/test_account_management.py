@@ -1,5 +1,7 @@
 import json
 import inspect
+import sqlite3
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +12,18 @@ from django.test import Client
 from apps.telegram_accounts.models import Proxy, TelegramAccount
 
 
-VALID_SESSION = b"SQLite format 3\x00" + (b"\x00" * 256)
+def valid_session_bytes():
+    with tempfile.NamedTemporaryFile(suffix=".session") as temp_file:
+        with sqlite3.connect(temp_file.name) as conn:
+            conn.execute("CREATE TABLE version (number INTEGER)")
+            conn.execute(
+                "CREATE TABLE sessions (dc_id INTEGER PRIMARY KEY, api_id INTEGER, test_mode INTEGER, auth_key BLOB, date INTEGER, user_id INTEGER, is_bot INTEGER)"
+            )
+            conn.execute("INSERT INTO version VALUES (4)")
+            conn.execute("INSERT INTO sessions VALUES (1, 12345, 0, ?, 1, 777, 0)", (b"auth-key",))
+            conn.commit()
+        temp_file.seek(0)
+        return temp_file.read()
 
 
 def fake_run_auth_flow_operation(account, operation, *, reset=False):
@@ -22,11 +35,11 @@ def fake_run_auth_flow_operation(account, operation, *, reset=False):
     password_2fa = closure.get("password_2fa", "")
 
     if verification_code == "12345" and not password_2fa:
-        account.requires_2fa = True
-        account.auth_state = TelegramAccount.AuthState.PENDING_2FA
-        account.last_auth_error = "2FA password required."
-        account.save(update_fields=["requires_2fa", "auth_state", "last_auth_error"])
-        return account
+        return {
+            "auth_state": TelegramAccount.AuthState.PENDING_2FA,
+            "last_auth_error": "2FA password required.",
+            "requires_2fa": True,
+        }
 
     return SimpleNamespace(id=777, username="farmuser", first_name="Farm", last_name="User")
 
@@ -88,7 +101,7 @@ def test_attach_account_via_session_endpoint_creates_attached_account():
                 "label": "Session Import",
                 "phone_number": "+380991112233",
                 "proxy": proxy.id,
-                "session_file": SimpleUploadedFile("import.session", VALID_SESSION),
+                "session_file": SimpleUploadedFile("import.session", valid_session_bytes()),
             },
         )
     finally:
@@ -145,6 +158,10 @@ def test_credentials_auth_flow_handles_pending_2fa_then_connects(monkeypatch):
     monkeypatch.setattr(
         "apps.telegram_accounts.services.run_auth_flow_operation",
         fake_run_auth_flow_operation,
+    )
+    monkeypatch.setattr(
+        "apps.telegram_accounts.services.refresh_account_profile_snapshot",
+        lambda account: account,
     )
     user = get_user_model().objects.create_user(email="credentials@example.com", password="pass")
     client = Client()
@@ -245,6 +262,38 @@ def test_assign_proxy_endpoint_updates_single_account_proxy():
     assert response.status_code == 200
     account.refresh_from_db()
     assert account.proxy == proxy
+
+
+@pytest.mark.django_db
+def test_assign_proxy_endpoint_rejects_proxy_owned_by_another_user():
+    owner = get_user_model().objects.create_user(email="assign-own-proxy@example.com", password="pass")
+    other = get_user_model().objects.create_user(email="assign-other-proxy@example.com", password="pass")
+    proxy = Proxy.objects.create(
+        owner=other,
+        name="Other Proxy",
+        protocol=Proxy.Protocol.SOCKS5,
+        host="127.0.0.1",
+        port=1080,
+    )
+    account = TelegramAccount.objects.create(
+        owner=owner,
+        label="Own Account",
+        session_name="own-account",
+        auth_state=TelegramAccount.AuthState.CONNECTED,
+        status=TelegramAccount.Status.ACTIVE,
+    )
+    client = Client()
+    client.force_login(owner)
+
+    response = client.post(
+        f"/api/v1/accounts/{account.id}/proxy/",
+        data=json.dumps({"proxy": proxy.id}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    account.refresh_from_db()
+    assert account.proxy is None
 
 
 @pytest.mark.django_db

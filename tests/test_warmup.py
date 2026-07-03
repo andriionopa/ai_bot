@@ -29,7 +29,7 @@ def test_warmup_dashboard_requires_authenticated_user():
     response = Client().get("/dashboard/warmup/")
 
     assert response.status_code == 302
-    assert response.headers["Location"].startswith("/auth/")
+    assert response.headers["Location"] == "http://127.0.0.1:3001/warmup"
 
 
 @pytest.mark.django_db
